@@ -1,0 +1,13 @@
+[package]
+name = "wha-rm2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libremarkable = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true
