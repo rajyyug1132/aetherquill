@@ -37,7 +37,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `topologicalFloodFill` → `recognizer/src/topological_flood_fill.rs`
 - [x] `signRotation` → `recognizer/src/sign_rotation.rs`
 - [x] `symbolRecognizer` → `recognizer/src/symbol_recognizer.rs`
-- [ ] `ringDetector` → `recognizer/src/ring_detector.rs` (owns the `Ring` type — move it here from coordinate_normalizer.rs)
+- [x] `ringDetector` → `recognizer/src/ring_detector.rs` (owns the `Ring` type — moved from coordinate_normalizer.rs)
 - [ ] `glyphWarnings` → `recognizer/src/glyph_warnings.rs`
 - [ ] `drawingClassifier` → `recognizer/src/drawing_classifier.rs` (pipeline entry)
 - [ ] `semanticRules` → `recognizer/src/semantic_rules.rs`

@@ -211,7 +211,7 @@ mod tests {
     use crate::stroke_cleaner::{clean_strokes, RawStroke};
 
     fn ring_at(cx: f64, cy: f64, radius: f64) -> Ring {
-        Ring { found: true, center: Point { x: cx, y: cy }, radius, stroke_ids: vec!["ring".into()] }
+        Ring { found: true, center: Point { x: cx, y: cy }, radius, stroke_ids: vec!["ring".into()], ..Default::default() }
     }
 
     fn line_stroke(id: &str, x0: f64, y0: f64, x1: f64, y1: f64) -> RawStroke {
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn no_ring_yields_no_candidates() {
-        let ring = Ring { found: false, center: Point { x: 0.0, y: 0.0 }, radius: 0.0, stroke_ids: vec![] };
+        let ring = Ring { found: false, center: Point { x: 0.0, y: 0.0 }, radius: 0.0, stroke_ids: vec![], ..Default::default() };
         let out = build_symbol_candidates(&[], &[], &ring, &LAYERS);
         assert!(out.is_empty());
     }
@@ -289,6 +289,7 @@ mod tests {
                     .as_array()
                     .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
                     .unwrap_or_default(),
+                ..Default::default()
             };
             let strokes: Vec<CleanedStroke> = scenario["cleanedStrokes"]
                 .as_array()

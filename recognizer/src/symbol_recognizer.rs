@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn matching_square_is_recognized_valid() {
-        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![] };
+        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![], ..Default::default() };
         let candidate = square_candidate(0.0, 0.0, 10.0, &ring);
         let dictionary = Dictionary { sigils: vec![square_entry("square-sigil")], signs: vec![] };
         let config = RecognitionConfig { min_confidence: 0.48 };
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn empty_dictionary_yields_unknown() {
-        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![] };
+        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![], ..Default::default() };
         let candidate = square_candidate(0.0, 0.0, 10.0, &ring);
         let dictionary = Dictionary { sigils: vec![], signs: vec![] };
         let config = RecognitionConfig { min_confidence: 0.48 };
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn unrelated_template_scores_below_threshold() {
-        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![] };
+        let ring = Ring { found: true, center: Point { x: 0.0, y: 0.0 }, radius: 100.0, stroke_ids: vec![], ..Default::default() };
         let candidate = square_candidate(0.0, 0.0, 10.0, &ring);
         // A single-dot template is nothing like a square outline.
         let dot_entry = DictionaryEntry {

@@ -3,18 +3,9 @@
 use crate::config::LayersConfig;
 use crate::geometry::{angle_deg_from_center, distance, Point};
 use crate::layer_mapper::{map_radius_to_layer, LayerInfo};
+pub use crate::ring_detector::Ring;
 use crate::stroke_cleaner::CleanedStroke;
 use std::collections::HashSet;
-
-/// The subset of the ring-detector output this module consumes. Owned here
-/// until ring_detector.rs lands, then moves there.
-#[derive(Debug, Clone)]
-pub struct Ring {
-    pub found: bool,
-    pub center: Point,
-    pub radius: f64,
-    pub stroke_ids: Vec<String>,
-}
 
 /// Ring-relative measurements for one point. The JS spreads the original
 /// point in too; nothing downstream reads those copies, so they're omitted.
@@ -178,12 +169,12 @@ mod tests {
     use crate::stroke_cleaner::{clean_strokes, RawStroke};
 
     fn ring_at(cx: f64, cy: f64, radius: f64) -> Ring {
-        Ring { found: true, center: Point { x: cx, y: cy }, radius, stroke_ids: vec!["ring".into()] }
+        Ring { found: true, center: Point { x: cx, y: cy }, radius, stroke_ids: vec!["ring".into()], ..Default::default() }
     }
 
     #[test]
     fn no_ring_classifies_everything_unbounded() {
-        let ring = Ring { found: false, center: Point { x: 0.0, y: 0.0 }, radius: 0.0, stroke_ids: vec![] };
+        let ring = Ring { found: false, center: Point { x: 0.0, y: 0.0 }, radius: 0.0, stroke_ids: vec![], ..Default::default() };
         let strokes = vec![CleanedStroke {
             id: "s1".into(),
             points: vec![Point { x: 0.0, y: 0.0 }],
@@ -265,6 +256,7 @@ mod tests {
                     .as_array()
                     .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
                     .unwrap_or_default(),
+                ..Default::default()
             };
             let strokes: Vec<CleanedStroke> = scenario["cleanedStrokes"]
                 .as_array()
