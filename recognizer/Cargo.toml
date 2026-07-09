@@ -3,5 +3,8 @@ name = "recognizer"
 version = "0.1.0"
 edition = "2021"
 
-# ponytail: no deps yet — pure geometry/parsing needs nothing but std.
+# ponytail: no runtime deps yet — pure geometry/parsing needs nothing but std.
 [dependencies]
+
+[dev-dependencies]
+serde_json = "1" # parity tests read fixtures/pipeline.json
