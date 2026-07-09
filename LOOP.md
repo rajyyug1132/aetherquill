@@ -31,7 +31,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `parity-fixtures` — `service/parity-gen.mjs` + `recognizer/fixtures/pipeline.json` (done this session)
 - [x] `layerMapper` → `recognizer/src/layer_mapper.rs` (ported early — coordinateNormalizer dependency)
 - [x] `coordinateNormalizer` → `recognizer/src/coordinate_normalizer.rs` (protocol dry run, this session)
-- [ ] `strokeGrouper` → `recognizer/src/stroke_grouper.rs`
+- [x] `strokeGrouper` → `recognizer/src/stroke_grouper.rs`
 - [ ] `templateNormalizer` → `recognizer/src/template_normalizer.rs`
 - [ ] `templateMatcher` → `recognizer/src/template_matcher.rs`
 - [ ] `topologicalFloodFill` → `recognizer/src/topological_flood_fill.rs`

@@ -130,6 +130,32 @@ pub fn dominant_axis_orientation_deg(points: &[Point]) -> f64 {
     normalize_angle_deg(angle_from_canvas_vector(angle.cos(), angle.sin()))
 }
 
+/// Port of geometry.js's allPoints — flattens a list of strokes' point lists.
+pub fn all_points(point_lists: &[Vec<Point>]) -> Vec<Point> {
+    point_lists.iter().flatten().copied().collect()
+}
+
+/// Port of geometry.js's boundsForStrokes.
+pub fn bounds_for_point_lists(point_lists: &[Vec<Point>]) -> Bounds {
+    bounds_for_points(&all_points(point_lists))
+}
+
+/// Port of geometry.js's directedStrokeAngle: the draw direction from the
+/// first point of the first multi-point stroke to the last point of the
+/// last multi-point stroke.
+pub fn directed_stroke_angle(point_lists: &[Vec<Point>]) -> f64 {
+    let first = point_lists.iter().find(|pts| pts.len() > 1);
+    let last = point_lists.iter().rev().find(|pts| pts.len() > 1);
+    match (first, last) {
+        (Some(f), Some(l)) => {
+            let first_pt = f[0];
+            let last_pt = l[l.len() - 1];
+            angle_from_canvas_vector(last_pt.x - first_pt.x, last_pt.y - first_pt.y)
+        }
+        _ => 0.0,
+    }
+}
+
 pub fn endpoint_closedness(strokes: &[Vec<Point>], size: f64) -> f64 {
     let endpoints: Vec<Point> = strokes
         .iter()
@@ -222,6 +248,20 @@ mod tests {
         ];
         let closedness = endpoint_closedness(&strokes, 100.0);
         assert!(closedness > 0.9, "expected near-closed ring, got {closedness}");
+    }
+
+    #[test]
+    fn directed_stroke_angle_points_from_first_to_last() {
+        let strokes = vec![vec![Point { x: 0.0, y: 0.0 }, Point { x: 10.0, y: 0.0 }]];
+        // Rightward stroke on a screen (y down) is "east" — canvas-vector angle 0.
+        assert!(directed_stroke_angle(&strokes).abs() < 1e-9);
+    }
+
+    #[test]
+    fn directed_stroke_angle_skips_single_point_strokes() {
+        let strokes = vec![vec![Point { x: 5.0, y: 5.0 }], vec![Point { x: 0.0, y: 0.0 }, Point { x: 0.0, y: -10.0 }]];
+        // Only the second stroke has >1 point, so first==last==that stroke: straight up.
+        assert!((directed_stroke_angle(&strokes) - 90.0).abs() < 1e-9);
     }
 
     #[test]
