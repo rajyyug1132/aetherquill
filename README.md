@@ -9,7 +9,8 @@ center, and the tablet recognizes the glyph, compiles it into a spell, and
 shows it activating on the page — a status line, a clean fitted-ring overlay,
 and a region flash with the element name.
 
-No app, no phone, no screen glow. Just ink on paper that means something.
+No app, no phone, no screen glow, no network. Just ink on paper that means
+something.
 
 ```
 draw a ring ──► draw a sigil inside it ──► close the ring
@@ -23,78 +24,104 @@ draw a ring ──► draw a sigil inside it ──► close the ring
 
 ## How it works
 
-Recognition — ring detection, sigil/sign matching, spell compilation — comes
-from [wha-spell-simulator](https://github.com/ytnrvdf/wha-spell-simulator),
-reused rather than reinvented: it's pure, DOM-free JS with its own dictionary
-of sigils, signs, and sample spell layouts. Aetherquill vendors that pipeline
-unmodified (`service/vendor/wha/`, MIT) as the ground truth for a native Rust
-port that runs on the tablet itself, with no phone or laptop required once
-installed. See [Architecture](#architecture--roadmap) below for exactly what's
-built today versus what's in flight.
+Recognition — ring detection, sigil/sign matching, spell compilation — is a
+1:1 Rust port of [wha-spell-simulator](https://github.com/ytnrvdf/wha-spell-simulator)'s
+pipeline, checked module-by-module against the original: the vendored JS
+(`service/vendor/wha/`, MIT, kept unmodified) is the parity ground truth for
+every `recognizer/` module, verified with 83 passing tests including a
+full end-to-end run against real fixture drawings for every element.
+`recognizer/` is a standalone, dependency-free crate — it compiles and tests
+on any OS, no ARM toolchain required.
 
-The on-device pen/framebuffer layer is a from-scratch Rust client built on
-[`libremarkable`](https://github.com/canselcik/libremarkable). The takeover
-launch pattern (stop the stock UI, draw directly to the e-ink panel, always
-restore the stock UI on exit) follows the convention established by
-[riddle](https://github.com/MaximeRivest/riddle), an enchanted-diary app for
-the reMarkable Paper Pro — riddle's display internals are Paper-Pro-specific
-and don't transfer, but its exit-safety pattern does.
+The on-device pen/framebuffer layer (`device/`) is a from-scratch Rust
+client built on [`libremarkable`](https://github.com/canselcik/libremarkable),
+linking `recognizer` directly — no network, no Node, no toltec runtime
+dependency. The takeover launch pattern (stop the stock UI, draw directly to
+the e-ink panel, always restore the stock UI on exit) follows the convention
+established by [riddle](https://github.com/MaximeRivest/riddle), an
+enchanted-diary app for the reMarkable Paper Pro — riddle's display internals
+are Paper-Pro-specific and don't transfer, but its exit-safety pattern does.
 
-## Architecture & roadmap
-
-**Current state (implemented, tested):** a tethered prototype. The Rust
-client on the tablet captures ink and ships completed drawings to a small
-recognition server running on a host machine over the local network; the
-server runs the vendored JS pipeline unmodified and returns the compiled
-spell. This is fast to iterate on and fully covered by automated tests, but
-it needs a host machine within reach every session.
+## Architecture
 
 ```
-reMarkable 2 (client/, Rust + libremarkable)      host machine (service/, Node)
-  pen ──► ink capture ──► local e-ink render          │
-              │ pen-up                                 │
-              ▼  newline-framed JSON over TCP           │
-        ─────────────────────────────────────────►  classifyDrawing()
-                                                      compileSpell()
-        ◄─────────────────────────────────────────  {glyphAST, spellIR}
-  status bar · ring overlay · activation flash
+reMarkable 2 (device/, Rust)
+  pen ──► ink capture ──► local e-ink render (DU partial refresh, instant)
+              │ pen-up
+              ▼  in-process call, no network
+        recognizer::classify_drawing()
+        recognizer::compile_spell()
+              │
+              ▼
+  status bar · ring overlay · activation flash · grimoire log (spell history)
 ```
 
-**In progress (see [TODOS.md](TODOS.md) and the architecture notes in
-[CLAUDE.md](CLAUDE.md)):** a full Rust port of the recognition pipeline,
-split into a dependency-free `recognizer` crate (portable, unit-tested
-against the vendored JS pipeline as ground truth) and a `device` crate (the
-RM2-specific binary). Once this lands, Aetherquill runs standalone on the
-tablet — no host machine, no network dependency. The rollout is deliberately
-staged and safety-gated: every step lives under the device's user-writable
-home directory, nothing touches the OS partition, and rollback is a single
-directory delete plus a reboot.
+`recognizer/` (the port) and `device/` (the RM2 binary + UI) are separate
+crates on purpose: `recognizer/` needs no `libremarkable` dependency and no
+ARM cross-compiler, so its correctness is verified entirely off-device.
+`device/` is thin — input handling, e-ink drawing, and wiring the two
+`recognizer` calls into the UI's status/overlay/flash rendering.
+
+**Status:** `recognizer/` is fully ported and tested (83 tests, including
+end-to-end parity against the real JS pipeline). `device/` is written against
+`recognizer`'s tested API and libremarkable's documented API, but has not yet
+been compiled — `libremarkable` only targets Linux/ARM, and no ARM toolchain,
+WSL, or Docker was available during the port. The safety-gated on-device
+rollout (OS-compatibility check, rm2fb acquisition, a minimal smoke-test
+binary before the real app ever touches the tablet) is tracked in
+[CLAUDE.md](CLAUDE.md) and is a human-supervised step — see
+[On-device deployment](#on-device-deployment-human-supervised) below.
+
+An earlier tethered prototype (`client/` + `service/server.js`, recognition
+running on a host machine over TCP) is kept as a working fallback until
+`device/` is verified on real hardware; see
+[Tethered prototype (fallback)](#tethered-prototype-fallback).
 
 ## Repository layout
 
 ```
-service/    recognition pipeline: server.js (TCP), dictionary.js (loader),
-            test.js (parity suite), vendor/wha/ (unmodified upstream — never edit)
-client/     the on-device Rust app (tethered prototype, today)
-scripts/    deploy + takeover launch scripts (always restore the stock UI on exit)
-TODOS.md    tracked deferred work
-CLAUDE.md   durable architecture decisions and constraints
+recognizer/  the ported recognition pipeline — pure Rust, zero libremarkable
+             dependency, tested standalone (cargo test, 83 passing)
+device/      the on-device RM2 binary: input, e-ink rendering, grimoire log,
+             links recognizer directly (unverified — see Status above)
+service/     legacy tethered oracle: server.js (TCP), dictionary.js (loader),
+             test.js, vendor/wha/ (unmodified upstream JS — never edit;
+             recognizer/'s parity ground truth)
+client/      the tethered prototype's on-device binary (fallback)
+scripts/     deploy + takeover launch scripts (always restore the stock UI
+             on exit; home-dir-only watchdog)
+TODOS.md     tracked deferred work
+CLAUDE.md    durable architecture decisions and constraints
 ```
 
-## Quickstart (tethered prototype)
+## Building `recognizer/` (works on any OS, no tablet needed)
 
 ```sh
-# 1. sanity-check the recognition pipeline — no tablet needed
-cd service && node --test
+cd recognizer && cargo test
+```
 
-# 2. start the recognition server on your host machine (listens on :7777)
-node service/server.js
+83 tests, including a full pipeline parity check against real fixture
+drawings (`recognizer/fixtures/pipeline.json`, generated by
+`service/parity-gen.mjs` from the vendored JS). Regenerate fixtures after any
+upstream `wha-spell-simulator` change:
 
-# 3. build + deploy the client (from WSL/Linux; needs Docker for `cross`)
-cd client && cross build --release --target armv7-unknown-linux-gnueabihf
-cd .. && ./scripts/deploy.sh
+```sh
+node service/parity-gen.mjs
+```
 
-# 4. run it — the script stops the stock UI and restores it on exit
+## On-device deployment (human-supervised)
+
+Deploying to the actual tablet is a phased, safety-gated process — not a
+single command. See [CLAUDE.md](CLAUDE.md) for the full rollout plan
+(device recon, rm2fb acquisition without toltec's package-manager bootstrap,
+a minimal smoke-test binary before the real app ever runs). In short:
+
+```sh
+# build device/ for the tablet (needs Docker for `cross`, or WSL + the ARM target)
+cd device && cross build --release --target armv7-unknown-linux-gnueabihf
+
+# deploy + run (script always restores the stock UI on exit, including on a hang)
+scp target/armv7-unknown-linux-gnueabihf/release/device root@10.11.99.1:/home/root/wha/wha-rm2
 ssh root@10.11.99.1 /home/root/wha/run-on-device.sh
 ```
 
@@ -104,16 +131,7 @@ layouts live in `service/vendor/wha/src/dictionary/sample-spells.json`, or
 try the [live web version](https://ytnrvdf.github.io/wha-spell-simulator) of
 the upstream simulator — same recognizer, same dictionaries.
 
-### Prerequisites
-
-- **Tablet**: reMarkable 2, SSH access, [toltec](https://toltec-dev.org/)
-  with the `display` (rm2fb) package installed.
-- **Host**: Node ≥ 18. For the client build: Rust +
-  [`cross`](https://github.com/cross-rs/cross) (needs Docker), or WSL with
-  the `armv7-unknown-linux-gnueabihf` target and a matching GCC linker.
-  Plain Windows MSVC Rust cannot link the ARM binary.
-
-## Controls (on device)
+### Controls (on device)
 
 | Do this | And |
 |---|---|
@@ -122,12 +140,40 @@ the upstream simulator — same recognizer, same dictionaries.
 | Tap **CLEAR** (top-right) | Wipe the page |
 | Tap with 4+ fingers | Exit — the stock UI restarts automatically |
 
+## Tethered prototype (fallback)
+
+The original tethered build still works if you'd rather iterate without
+touching the tablet's deployed binary, or while `device/` is unverified:
+
+```sh
+# 1. sanity-check the recognition pipeline — no tablet needed
+cd service && node --test
+
+# 2. start the recognition server on your host machine (listens on :7777)
+node service/server.js
+
+# 3. build + deploy the client
+cd client && cross build --release --target armv7-unknown-linux-gnueabihf
+cd .. && ./scripts/deploy.sh
+
+# 4. run it
+ssh root@10.11.99.1 /home/root/wha/run-on-device.sh
+```
+
+### Prerequisites
+
+- **Tablet**: reMarkable 2, SSH access, [toltec](https://toltec-dev.org/)
+  with the `display` (rm2fb) package installed.
+- **Host**: Node ≥ 18 (tethered fallback only). For either build: Rust +
+  [`cross`](https://github.com/cross-rs/cross) (needs Docker), or WSL with
+  the `armv7-unknown-linux-gnueabihf` target and a matching GCC linker.
+  Plain Windows MSVC Rust cannot link the ARM binary.
+
 ## Known limits (prototype)
 
 - Feedback is text + overlay + flash; no particle effects (e-ink can't do 60fps).
 - One ring, one primary sigil per drawing (an upstream pipeline limit).
-- The tethered client needs a host machine reachable on the network — the
-  standalone Rust port removes this, see [Architecture & roadmap](#architecture--roadmap).
+- `device/` is unverified on real hardware — see [Status](#architecture) above.
 
 ## License
 
