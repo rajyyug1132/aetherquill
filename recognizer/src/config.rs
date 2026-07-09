@@ -36,3 +36,11 @@ pub const LAYERS: LayersConfig = LayersConfig {
 /// `recognition` section of config.js.
 pub const RECOGNITION: crate::symbol_recognizer::RecognitionConfig =
     crate::symbol_recognizer::RecognitionConfig { min_confidence: 0.48 };
+
+/// `compiler` section of config.js.
+pub struct CompilerConfig {
+    pub minimum_primary_sigil_confidence: f64,
+    pub max_unknowns_before_instability: f64,
+}
+
+pub const COMPILER: CompilerConfig = CompilerConfig { minimum_primary_sigil_confidence: 0.62, max_unknowns_before_instability: 4.0 };

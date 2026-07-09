@@ -42,7 +42,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `drawingClassifier` → `recognizer/src/drawing_classifier.rs` (pipeline entry)
 - [x] `semanticRules` → `recognizer/src/semantic_rules.rs`
 - [x] `spellDirection` → `recognizer/src/spell_direction.rs`
-- [ ] `spellQuality` → `recognizer/src/spell_quality.rs`
+- [x] `spellQuality` → `recognizer/src/spell_quality.rs`
 - [ ] `spellBuilder` → `recognizer/src/spell_builder.rs`
 - [ ] `dictionaries` — embed `sigils.json`/`signs.json` via `include_str!` + serde; parse once at startup
 - [ ] `end-to-end` — Rust test: every `pipeline.json` scenario through `classify_drawing` → `compile_spell`, parity on `glyphAST`/`spellIR` fields
