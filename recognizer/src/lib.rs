@@ -7,6 +7,7 @@ pub mod layer_mapper;
 pub mod ring_detector;
 pub mod semantic_rules;
 pub mod sign_rotation;
+pub mod spell_direction;
 pub mod stroke_cleaner;
 pub mod stroke_grouper;
 pub mod symbol_recognizer;

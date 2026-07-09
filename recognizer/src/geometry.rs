@@ -32,6 +32,10 @@ pub fn clamp_signed(value: f64, limit: f64) -> f64 {
     clamp(value, -limit, limit)
 }
 
+pub fn rounded_degrees(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
 pub fn normalize_angle_deg(value: f64) -> f64 {
     ((value % FULL_CIRCLE_DEG) + FULL_CIRCLE_DEG) % FULL_CIRCLE_DEG
 }
