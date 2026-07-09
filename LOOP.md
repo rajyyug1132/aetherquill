@@ -33,7 +33,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `coordinateNormalizer` → `recognizer/src/coordinate_normalizer.rs` (protocol dry run, this session)
 - [x] `strokeGrouper` → `recognizer/src/stroke_grouper.rs`
 - [x] `templateNormalizer` → `recognizer/src/template_normalizer.rs`
-- [ ] `templateMatcher` → `recognizer/src/template_matcher.rs`
+- [x] `templateMatcher` → `recognizer/src/template_matcher.rs`
 - [ ] `topologicalFloodFill` → `recognizer/src/topological_flood_fill.rs`
 - [ ] `signRotation` → `recognizer/src/sign_rotation.rs`
 - [ ] `symbolRecognizer` → `recognizer/src/symbol_recognizer.rs`

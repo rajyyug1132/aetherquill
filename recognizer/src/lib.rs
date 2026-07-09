@@ -4,4 +4,5 @@ pub mod geometry;
 pub mod layer_mapper;
 pub mod stroke_cleaner;
 pub mod stroke_grouper;
+pub mod template_matcher;
 pub mod template_normalizer;
