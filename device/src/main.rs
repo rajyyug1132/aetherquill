@@ -39,6 +39,26 @@ use recognizer::ring_detector::Ring;
 use recognizer::spell_builder::compile_spell;
 use recognizer::stroke_cleaner::RawStroke;
 
+mod grimoire;
+
+const HEARTBEAT_PATH: &str = "/home/root/wha/heartbeat";
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Touches HEARTBEAT_PATH on a timer. scripts/run-on-device.sh's watchdog
+/// loop kills this process (via SIGTERM, caught by the exit trap that
+/// restores xochitl) if the file goes stale — catches a hard hang the
+/// process's own exit-on-crash never reaches, since a hang never exits.
+/// ponytail: proves this thread is scheduled, not that the UI event loop
+/// specifically is responsive — a hang isolated to one thread while this
+/// ticker keeps running slips through. Upgrade to a per-thread liveness
+/// check only if that pattern is actually observed on-device.
+fn heartbeat_loop() {
+    loop {
+        let _ = std::fs::write(HEARTBEAT_PATH, b"");
+        std::thread::sleep(HEARTBEAT_INTERVAL);
+    }
+}
+
 const SCREEN_W: f32 = DISPLAYWIDTH as f32; // 1404; height is 1872
 
 // ponytail: screen px -> web-canvas px, so the vendored CONFIG's pixel-tuned
@@ -184,6 +204,9 @@ fn render_feedback(fb: &mut Framebuffer, result: &RecognitionResult, last_activa
     let activated = result.active && result.signature != *last_activation;
     if activated {
         *last_activation = result.signature.clone();
+        if let Some(element) = &result.element {
+            grimoire::log_spell(element, result.quality, result.stability, &result.signature);
+        }
         for extra in 10..16 {
             fb.draw_circle(Point2 { x: cx, y: cy }, radius + extra, color::BLACK);
         }
@@ -340,6 +363,7 @@ fn main() {
     let (tx, rx) = channel::<Vec<ScreenStroke>>();
     let worker_ctx = app.upgrade_ref();
     std::thread::spawn(move || recognition_worker(worker_ctx, rx));
+    std::thread::spawn(heartbeat_loop);
 
     let mut state = State { strokes: Vec::new(), current: Vec::new(), pen_down: false, fingers: HashSet::new(), next_id: 1, tx };
 
