@@ -1,6 +1,7 @@
 pub mod config;
 pub mod coordinate_normalizer;
 pub mod geometry;
+pub mod glyph_warnings;
 pub mod layer_mapper;
 pub mod ring_detector;
 pub mod sign_rotation;
