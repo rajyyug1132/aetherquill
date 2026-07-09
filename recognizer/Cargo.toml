@@ -1,0 +1,7 @@
+[package]
+name = "recognizer"
+version = "0.1.0"
+edition = "2021"
+
+# ponytail: no deps yet — pure geometry/parsing needs nothing but std.
+[dependencies]
