@@ -5,6 +5,7 @@ pub mod layer_mapper;
 pub mod sign_rotation;
 pub mod stroke_cleaner;
 pub mod stroke_grouper;
+pub mod symbol_recognizer;
 pub mod template_matcher;
 pub mod template_normalizer;
 pub mod topological_flood_fill;
