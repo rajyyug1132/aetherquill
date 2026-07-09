@@ -40,7 +40,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `ringDetector` → `recognizer/src/ring_detector.rs` (owns the `Ring` type — moved from coordinate_normalizer.rs)
 - [x] `glyphWarnings` → `recognizer/src/glyph_warnings.rs`
 - [x] `drawingClassifier` → `recognizer/src/drawing_classifier.rs` (pipeline entry)
-- [ ] `semanticRules` → `recognizer/src/semantic_rules.rs`
+- [x] `semanticRules` → `recognizer/src/semantic_rules.rs`
 - [ ] `spellDirection` → `recognizer/src/spell_direction.rs`
 - [ ] `spellQuality` → `recognizer/src/spell_quality.rs`
 - [ ] `spellBuilder` → `recognizer/src/spell_builder.rs`

@@ -24,7 +24,6 @@ use crate::layer_mapper::Layer;
 use crate::sign_rotation::{recognition_plan_for_symbol, RecognitionEntry};
 use crate::stroke_grouper::{Candidate, RadialFacing};
 use crate::template_matcher::{score_stroke_template, TemplateScore};
-use std::collections::HashMap;
 
 const RECOGNITION_AMBIGUITY_GAP: f64 = 0.065;
 const SIMPLE_SIGN_STROKE_LIMIT: usize = 6;
@@ -32,7 +31,19 @@ const SIMPLE_SIGN_MIN_TEMPLATE_COVERAGE: f64 = 0.78;
 
 // --- dictionary shape (real JSON wiring lands in the `dictionaries` task) ---
 
-pub type SemanticFields = HashMap<String, f64>;
+/// A dictionary entry's `semantic` block. `manifestation`/`direction_mode` are
+/// string-valued (read by compiler/semanticRules.js); the rest are numeric
+/// deltas defaulted to 0 wherever they're read (JS: `semantic[target] ?? 0`).
+#[derive(Debug, Clone, Default)]
+pub struct SemanticFields {
+    pub manifestation: Option<String>,
+    pub direction_mode: Option<String>,
+    pub force: Option<f64>,
+    pub focus: Option<f64>,
+    pub spread: Option<f64>,
+    pub range: Option<f64>,
+    pub lifetime_bias: Option<f64>,
+}
 
 #[derive(Debug, Clone)]
 pub struct StrokeTemplate {
@@ -436,6 +447,8 @@ pub struct Recognition {
     pub angle_deg: f64,
     pub size_norm: f64,
     pub length_norm: f64,
+    pub orientation_deg: f64,
+    pub directed_orientation_deg: f64,
     pub radial_facing: RadialFacing,
     pub neatness: f64,
     pub recognized: bool,
@@ -511,6 +524,8 @@ pub fn recognize_candidates(candidates: &[Candidate], dictionary: &Dictionary, c
                 angle_deg: candidate.angle_deg,
                 size_norm: candidate.size_norm,
                 length_norm: candidate.length_norm,
+                orientation_deg: candidate.orientation_deg,
+                directed_orientation_deg: candidate.directed_orientation_deg,
                 radial_facing: candidate.radial_facing,
                 neatness: candidate.neatness,
                 recognized: accepted,

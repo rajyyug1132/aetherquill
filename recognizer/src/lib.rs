@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod glyph_warnings;
 pub mod layer_mapper;
 pub mod ring_detector;
+pub mod semantic_rules;
 pub mod sign_rotation;
 pub mod stroke_cleaner;
 pub mod stroke_grouper;
