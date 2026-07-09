@@ -1,5 +1,6 @@
 pub mod config;
 pub mod coordinate_normalizer;
+pub mod dictionaries;
 pub mod drawing_classifier;
 pub mod geometry;
 pub mod glyph_warnings;

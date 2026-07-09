@@ -23,6 +23,18 @@ impl Layer {
             Layer::Outside => "outside",
         }
     }
+
+    /// Inverse of `as_str` — used when parsing dictionary JSON's `allowedLayers`.
+    pub fn from_str(value: &str) -> Option<Layer> {
+        match value {
+            "center" => Some(Layer::Center),
+            "middle" => Some(Layer::Middle),
+            "outer" => Some(Layer::Outer),
+            "ringBoundary" => Some(Layer::RingBoundary),
+            "outside" => Some(Layer::Outside),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
