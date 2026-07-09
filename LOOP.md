@@ -45,7 +45,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `spellQuality` → `recognizer/src/spell_quality.rs`
 - [x] `spellBuilder` → `recognizer/src/spell_builder.rs`
 - [x] `dictionaries` — embed `sigils.json`/`signs.json` via `include_str!` + serde; parse once at startup
-- [ ] `end-to-end` — Rust test: every `pipeline.json` scenario through `classify_drawing` → `compile_spell`, parity on `glyphAST`/`spellIR` fields
+- [x] `end-to-end` — Rust test: every `pipeline.json` scenario through `classify_drawing` → `compile_spell`, parity on `glyphAST`/`spellIR` fields
 - [ ] `device-crate` — new `device/` crate: UI from `client/src/main.rs` + `recognizer` linked, TCP oracle client deleted. `cargo check` only (no ARM linker here); document `cross build --release --target armv7-unknown-linux-gnueabihf`
 - [ ] `watchdog-grimoire` — systemd unit (home-dir only) + JSON spell-history log module in `device/`
 - [ ] `readme-rewrite` — drop superseded tethered-oracle sections; describe the standalone architecture
