@@ -44,3 +44,16 @@ pub struct CompilerConfig {
 }
 
 pub const COMPILER: CompilerConfig = CompilerConfig { minimum_primary_sigil_confidence: 0.62, max_unknowns_before_instability: 4.0 };
+
+/// `renderer.effectSize` section of config.js — the only renderer field the
+/// compiler reads. inkColor/guideColor/particleBaseCount/particleCap are
+/// rendering-only and belong to the device crate, not this one.
+pub struct EffectSizeConfig {
+    pub base_scale: f64,
+    pub sigil_size_influence: f64,
+    pub min_scale: f64,
+    pub max_scale: f64,
+}
+
+pub const EFFECT_SIZE: EffectSizeConfig =
+    EffectSizeConfig { base_scale: 1.28, sigil_size_influence: 2.1, min_scale: 1.0, max_scale: 2.35 };
