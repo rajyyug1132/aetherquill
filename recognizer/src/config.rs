@@ -32,3 +32,7 @@ pub const LAYERS: LayersConfig = LayersConfig {
     boundary_max: 1.06,
     boundary_tolerance: 0.055,
 };
+
+/// `recognition` section of config.js.
+pub const RECOGNITION: crate::symbol_recognizer::RecognitionConfig =
+    crate::symbol_recognizer::RecognitionConfig { min_confidence: 0.48 };
