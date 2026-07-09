@@ -18,6 +18,13 @@ pub struct LayersConfig {
     pub boundary_tolerance: f64,
 }
 
+/// `ring` section of config.js.
+pub struct RingConfig {
+    pub min_radius: f64,
+}
+
+pub const RING: RingConfig = RingConfig { min_radius: 70.0 };
+
 pub const LAYERS: LayersConfig = LayersConfig {
     center_max: 0.32,
     middle_max: 0.66,

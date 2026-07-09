@@ -34,7 +34,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `strokeGrouper` → `recognizer/src/stroke_grouper.rs`
 - [x] `templateNormalizer` → `recognizer/src/template_normalizer.rs`
 - [x] `templateMatcher` → `recognizer/src/template_matcher.rs`
-- [ ] `topologicalFloodFill` → `recognizer/src/topological_flood_fill.rs`
+- [x] `topologicalFloodFill` → `recognizer/src/topological_flood_fill.rs`
 - [ ] `signRotation` → `recognizer/src/sign_rotation.rs`
 - [ ] `symbolRecognizer` → `recognizer/src/symbol_recognizer.rs`
 - [ ] `ringDetector` → `recognizer/src/ring_detector.rs` (owns the `Ring` type — move it here from coordinate_normalizer.rs)
