@@ -1,0 +1,8 @@
+{
+  "id": "aetherquill",
+  "name": "Aetherquill",
+  "version": "0.2.0",
+  "description": "Draw spells: ring + sigil + signs, recognized and cast on the page.",
+  "application": "aetherquill",
+  "qtfb": true
+}

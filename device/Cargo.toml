@@ -1,11 +1,16 @@
 [package]
 name = "device"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
+[[bin]]
+name = "aetherquill"
+path = "src/main.rs"
+
 [dependencies]
-libremarkable = "0.6"
 recognizer = { path = "../recognizer" }
+libc = "0.2"
+font8x8 = "0.3"
 
 [profile.release]
 lto = true

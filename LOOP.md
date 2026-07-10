@@ -49,7 +49,12 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `device-crate` — new `device/` crate: UI from `client/src/main.rs` + `recognizer` linked, TCP oracle client deleted. **UNVERIFIED** — `cargo check` fails inside libremarkable's `epoll` dep (Linux-only `libc` constants) before reaching our code at all; needs `cross build --release --target armv7-unknown-linux-gnueabihf` (Docker) or the real ARM toolchain
 - [x] `watchdog-grimoire` — home-dir-only watchdog (backgrounded shell loop, not a real systemd unit — see run-on-device.sh comment) + JSONL spell-history log module in `device/`
 - [x] `readme-rewrite` — drop superseded tethered-oracle sections; describe the standalone architecture
-- [ ] ⛔ HUMAN: T1 device recon · T5 rm2fb extraction + hello-ink smoke test · T6 deploy
+- [x] ⛔ HUMAN: T1 device recon — done 2026-07-09/10 (stock device, OS 3.27.3.0)
+- [x] ARCHITECTURE PIVOT 2026-07-10 (supersedes rm2fb path — see CLAUDE.md):
+  xovi + AppLoad + qtfb via Vellum; device/ rewritten pure-Rust (qtfb client
+  ported from riddle, input via qtfb socket, no libremarkable); builds as
+  static armv7 musl binary FROM WINDOWS (rust-lld, no WSL/Docker/cross)
+- [ ] ⛔ HUMAN: install Vellum + xovi + appload on tablet · copy appload bundle · first run
 
 ## Per-iteration recipe
 

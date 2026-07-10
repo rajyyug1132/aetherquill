@@ -29,13 +29,28 @@ light) + modifying signs and shows the spell activating on the e-ink screen.
 - **Mandatory safety gate before ANY on-device deploy:** manually verify OS
   3.27.1.0 against toltec's current compatibility info. If unlisted/unclear,
   stop and wait — do not proceed on a guess.
-- **GATE STATUS 2026-07-09: BLOCKED.** User verified rm2fb/toltec are NOT
-  compatible with OS 3.27.1.0 (device build 20260506100933). T5/T6 deploy is
-  on hold until a community-validated rm2fb build for this OS exists. Do not
-  attempt workarounds (self-build, offset guessing, downgrade suggestions)
-  without a fresh explicit user decision. T1 recon done 2026-07-09: device
-  is 100% stock (no toltec/rm2fb/wha dir), 5.7G free, Wacom I2C Digitizer
-  present — everything else about the device matches plan assumptions.
+- **GATE STATUS 2026-07-10: UNBLOCKED via architecture pivot (supersedes the
+  rm2fb path entirely).** rm2fb/toltec are dead for 3.27.x and downgrading
+  was rejected (semi-brick risk, notebook data loss, rotated signing keys —
+  per community reports). The live 2026 ecosystem is **Vellum (package
+  manager, home-dir-only: /home/root/.vellum) + xovi + AppLoad + qtfb** —
+  the same stack riddle's windowed flavour uses. Verified against device:
+  OS 3.27.3.0 (build 20260612085811) satisfies the whole dep chain
+  (xovi: unpinned; xovi-extensions ≥3.20; appload ≥3.26 <3.28, armv7 ✅).
+  Everything still lands in /home/root only; AppLoad apps run WINDOWED
+  under a living xochitl (no takeover, no offsets, no stopped UI) — safer
+  than the original plan. Riddle's qtfb.rs/pen.rs (MIT) are the reference
+  clients for the qtfb protocol + raw evdev pen.
+- **Toolchain breakthrough 2026-07-10:** `device/` drops libremarkable
+  entirely (it only exists for fb/input, both replaced by qtfb + evdev).
+  Pure-Rust device crate builds as a **static musl binary from plain
+  Windows**: `rustup target add armv7-unknown-linux-musleabihf` +
+  `cargo build --release --target armv7-unknown-linux-musleabihf` with
+  linker rust-lld. Proven on recognizer. No WSL/Docker/apt/cross needed —
+  those setup paths are obsolete, do not resurrect them.
+- T1 recon done 2026-07-09 (re-run 2026-07-10 after user's OS update):
+  device otherwise 100% stock (no toltec/rm2fb/wha dir), 5.7G free,
+  Wacom I2C Digitizer + pt_mt input devices present.
 - rm2fb hook failure at startup: fail fast, rely on the existing shell
   exit-trap (`scripts/run-on-device.sh`, `trap restore EXIT INT TERM`) to
   restore xochitl. Do not add in-app detection/handling for this — decided
