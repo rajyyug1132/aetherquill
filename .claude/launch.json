@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wha-oracle",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["service/server.js"],
+      "port": 7777
+    }
+  ]
+}
