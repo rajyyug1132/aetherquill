@@ -29,6 +29,13 @@ light) + modifying signs and shows the spell activating on the e-ink screen.
 - **Mandatory safety gate before ANY on-device deploy:** manually verify OS
   3.27.1.0 against toltec's current compatibility info. If unlisted/unclear,
   stop and wait — do not proceed on a guess.
+- **GATE STATUS 2026-07-09: BLOCKED.** User verified rm2fb/toltec are NOT
+  compatible with OS 3.27.1.0 (device build 20260506100933). T5/T6 deploy is
+  on hold until a community-validated rm2fb build for this OS exists. Do not
+  attempt workarounds (self-build, offset guessing, downgrade suggestions)
+  without a fresh explicit user decision. T1 recon done 2026-07-09: device
+  is 100% stock (no toltec/rm2fb/wha dir), 5.7G free, Wacom I2C Digitizer
+  present — everything else about the device matches plan assumptions.
 - rm2fb hook failure at startup: fail fast, rely on the existing shell
   exit-trap (`scripts/run-on-device.sh`, `trap restore EXIT INT TERM`) to
   restore xochitl. Do not add in-app detection/handling for this — decided
