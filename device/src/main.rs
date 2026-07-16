@@ -146,7 +146,7 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .collect()
 }
 
-, reMarkable-style: pen, eraser, undo, redo, clear.
+// Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
 const SIDEBAR_W: i32 = 110;
 const STATUS_H: i32 = 64;
 const ICON_X: i32 = 13;
