@@ -89,6 +89,18 @@ impl Fb<'_> {
         }
     }
 
+    /// Arc from a0 to a1 radians (screen-space clockwise-positive).
+    fn arc(&mut self, cx: i32, cy: i32, radius: i32, a0: f64, a1: f64, thickness: i32, c: u16) {
+        let steps = (radius.max(8) * 8) as usize;
+        for i in 0..=steps {
+            let a = a0 + (a1 - a0) * i as f64 / steps as f64;
+            for t in 0..thickness {
+                let r = (radius + t) as f64;
+                self.set(cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32, c);
+            }
+        }
+    }
+
     /// Circle outline (midpoint-ish via angle stepping — plenty for an overlay).
     fn circle(&mut self, cx: i32, cy: i32, radius: i32, thickness: i32, c: u16) {
         let steps = (radius.max(8) * 8) as usize;
@@ -304,12 +316,33 @@ fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     }).collect())
 }
 
+// Undo/redo are square icon buttons (reMarkable-toolbar style arrows).
+const ICON_W: i32 = 84;
+const UNDO_X: i32 = 12;
+const REDO_X: i32 = UNDO_X + ICON_W + 12;
 const ERASE_X: i32 = 12 + BTN_W + 12;
+
+/// Curved undo/redo arrow: three-quarter arc + arrowhead. `flip` mirrors it.
+fn draw_arrow_icon(fb: &mut Fb, x: i32, flip: bool) {
+    fb.rect_outline(x, 15, ICON_W, BTN_H, 3, BLACK);
+    let (cx, cy, r) = (x + ICON_W / 2, 15 + BTN_H / 2 + 4, 18);
+    let (a0, a1) = if flip { (-0.75 * std::f64::consts::PI, 0.9 * std::f64::consts::PI) } else { (-0.25 * std::f64::consts::PI, -1.9 * std::f64::consts::PI) };
+    fb.arc(cx, cy, r, a0, a1, 3, BLACK);
+    // Arrowhead at the arc's end.
+    let tip = a1;
+    let (tx, ty) = (cx + (tip.cos() * r as f64) as i32, cy + (tip.sin() * r as f64) as i32);
+    let side = if flip { -1.0 } else { 1.0 };
+    let tangent = tip + side * std::f64::consts::FRAC_PI_2;
+    for spread in [-0.5, 0.5] {
+        let a = tangent + spread;
+        fb.line(tx, ty, tx + (a.cos() * 12.0) as i32, ty + (a.sin() * 12.0) as i32, 3, BLACK);
+    }
+}
 
 fn draw_chrome(fb: &mut Fb, erase_mode: bool) {
     fb.fill_rect(0, 0, W, CHROME_H, WHITE);
-    fb.rect_outline(12, 15, BTN_W, BTN_H, 3, BLACK);
-    fb.text(48, 32, "UNDO", 4, BLACK);
+    draw_arrow_icon(fb, UNDO_X, false);
+    draw_arrow_icon(fb, REDO_X, true);
     // ERASE is a toggle: filled black while active. (AppLoad's qtfb bridge
     // doesn't forward pen-tip vs eraser-back — devId is a TODO upstream —
     // so the marker's built-in eraser can't be detected in windowed mode.)
@@ -543,6 +576,7 @@ fn main() {
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
     let mut strokes: Vec<ScreenStroke> = Vec::new();
+    let mut redo: Vec<ScreenStroke> = Vec::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
     let mut pen_down = false;
     let mut next_id: u64 = 1;
@@ -600,7 +634,7 @@ fn main() {
                             s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 20.0)
                         });
                         if let Some(idx) = hit {
-                            strokes.remove(idx);
+                            redo.push(strokes.remove(idx));
                             erased_any = true;
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                         }
@@ -652,6 +686,7 @@ fn main() {
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                         strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
                         next_id += 1;
+                        redo.clear();
                         let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
                         previous_ring = outcome.ring.clone();
                         let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
@@ -703,15 +738,21 @@ fn main() {
                         continue;
                     }
                     last_chrome_tap = Instant::now();
-                    if event.x <= 12 + BTN_W {
-                        strokes.pop();
+                    if event.x <= UNDO_X + ICON_W {
+                        if let Some(s) = strokes.pop() {
+                            redo.push(s);
+                        }
+                    } else if event.x <= REDO_X + ICON_W {
+                        if let Some(s) = redo.pop() {
+                            strokes.push(s);
+                        }
                     } else if (ERASE_X..ERASE_X + BTN_W).contains(&event.x) {
                         erase_mode = !erase_mode;
                         draw_chrome(&mut fb, erase_mode);
                         let _ = client.update_partial(0, 0, W, CHROME_H);
                         continue;
                     } else if event.x >= W - 12 - BTN_W {
-                        strokes.clear();
+                        redo.extend(strokes.drain(..)); // CLEAR is undoable via redo taps
                     } else {
                         continue;
                     }
@@ -768,6 +809,7 @@ fn main() {
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                 strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
                 next_id += 1;
+                redo.clear();
                 let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
                 previous_ring = outcome.ring.clone();
                 let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
