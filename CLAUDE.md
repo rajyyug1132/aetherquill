@@ -48,6 +48,11 @@ light) + modifying signs and shows the spell activating on the e-ink screen.
   `cargo build --release --target armv7-unknown-linux-musleabihf` with
   linker rust-lld. Proven on recognizer. No WSL/Docker/apt/cross needed —
   those setup paths are obsolete, do not resurrect them.
+- **Device stack INSTALLED 2026-07-16:** Vellum + xovi + xovi-extensions +
+  appload 0.5.3 live on device (build 20260612085811). `rebuild_hashtable`
+  run. ⚠️ xovi does NOT auto-start after reboot — must run
+  `/home/root/xovi/start` (or wire persistence; check vellum for a service
+  package before hand-rolling). AppLoad confirmed visible in xochitl.
 - T1 recon done 2026-07-09 (re-run 2026-07-10 after user's OS update):
   device otherwise 100% stock (no toltec/rm2fb/wha dir), 5.7G free,
   Wacom I2C Digitizer + pt_mt input devices present.
