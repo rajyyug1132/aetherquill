@@ -338,6 +338,42 @@ fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: O
     }
 }
 
+/// Spell activation burst, staged for e-ink: bold seal ring, then a radial
+/// ray burst, then the element name stamped large. Each stage is its own
+/// partial refresh (~180ms apart) so the panel animates instead of smearing.
+/// ponytail: element-agnostic burst; per-element effect art (flame/wave/gust
+/// shapes like the upstream demo.gif) can layer on later if wanted.
+fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str) {
+    let pad = radius + 110;
+    let flush = |client: &QtfbClient| {
+        let _ = client.update_partial((cx - pad).max(0), (cy - pad).max(0), pad * 2, pad * 2);
+        std::thread::sleep(std::time::Duration::from_millis(180));
+    };
+
+    // Stage 1: the seal itself flares — double bold ring.
+    fb.circle(cx, cy, radius + 10, 6, BLACK);
+    fb.circle(cx, cy, radius + 24, 2, BLACK);
+    flush(client);
+
+    // Stage 2: radial burst — 24 rays shooting outward.
+    for i in 0..24 {
+        let a = std::f64::consts::TAU * i as f64 / 24.0;
+        let (sin, cos) = (a.sin(), a.cos());
+        let r0 = (radius + 30) as f64;
+        let r1 = (radius + if i % 2 == 0 { 95 } else { 65 }) as f64;
+        fb.line(
+            cx + (cos * r0) as i32, cy + (sin * r0) as i32,
+            cx + (cos * r1) as i32, cy + (sin * r1) as i32,
+            if i % 2 == 0 { 4 } else { 2 }, BLACK,
+        );
+    }
+    flush(client);
+
+    // Stage 3: element name stamped beneath the seal.
+    fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
+    flush(client);
+}
+
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
     let line1 = match &outcome.element {
         Some(element) if outcome.valid => format!(
@@ -363,8 +399,7 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
         *last_activation = outcome.signature.clone();
         if let Some(element) = &outcome.element {
             grimoire::log_spell(element, outcome.quality, outcome.stability, &outcome.signature);
-            fb.circle(cx, cy, radius + 10, 6, BLACK);
-            fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
+            animate_activation(fb, client, cx, cy, radius, element);
         }
     }
 
