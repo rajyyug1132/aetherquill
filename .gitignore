@@ -3,3 +3,4 @@ target/
 dist/
 *.log
 .DS_Store
+effect_preview.ppm

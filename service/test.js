@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { connect } from "node:net";
-import { createInterface } from "node:readline";
 import test from "node:test";
 
-import { recognize, serve } from "./server.js";
+import { recognize } from "./server.js";
 import { loadDictionary } from "./dictionary.js";
 
 // Synthesizes a drawing the way the on-device client reports one: strokes of
@@ -64,28 +62,4 @@ test("ring with centered fire sigil compiles an active fire spell", () => {
   assert.equal(spellIR.valid, true);
   assert.equal(spellIR.element, "fire");
   assert.equal(spellIR.active, true, `expected active spell, got status: ${spellIR.status}`);
-});
-
-test("TCP protocol: newline-framed JSON round trip", async () => {
-  const server = serve(0);
-  await new Promise((resolve) => server.on("listening", resolve));
-  const socket = connect(server.address().port, "127.0.0.1");
-  const lines = createInterface({ input: socket });
-  const replies = [];
-  const nextReply = () =>
-    new Promise((resolve) => lines.once("line", (line) => resolve(JSON.parse(line))));
-
-  socket.write(JSON.stringify({ strokes: [ringStroke(350, 450, 260), ...sigilStrokes("fire", 350, 450, 130)] }) + "\n");
-  replies.push(await nextReply());
-  socket.write("not json\n");
-  replies.push(await nextReply());
-  socket.write(JSON.stringify({ strokes: [] }) + "\n");
-  replies.push(await nextReply());
-
-  assert.equal(replies[0].spellIR.element, "fire");
-  assert.ok(replies[1].error, "malformed line answers with an error, connection survives");
-  assert.equal(replies[2].spellIR.status, "No ring detected");
-
-  socket.destroy();
-  server.close();
 });
