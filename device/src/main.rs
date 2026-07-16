@@ -334,6 +334,9 @@ fn main() {
     let mut hold_anchor = (0.0_f64, 0.0_f64);
     let mut hold_since = Instant::now();
     let mut hold_snapped = false;
+    // Distinguishes "pen still, events trickling" (hold-to-snap) from "pen
+    // gone, no events at all" (silence commit) — both stall dirty_since.
+    let mut last_pen_event = Instant::now();
     // Auto ring snap: redraw once per newly completed ring.
     let mut snapped_ring_ids: Vec<String> = Vec::new();
 
@@ -352,6 +355,7 @@ fn main() {
             match event.input_type {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
                     let (x, y) = (event.x as f64, event.y as f64);
+                    last_pen_event = Instant::now();
                     if y < CHROME_H as f64 {
                         continue;
                     }
@@ -363,6 +367,7 @@ fn main() {
                         pen_down = true;
                         hold_snapped = false;
                         current = vec![(x, y)];
+                        eprintln!("pen down at {x},{y}");
                         continue;
                     }
                     let last = *current.last().unwrap();
@@ -380,6 +385,7 @@ fn main() {
                     dirty_since = Instant::now();
                 }
                 qtfb::INPUT_PEN_RELEASE => {
+                    eprintln!("pen release, {} pts", current.len());
                     if !pen_down {
                         continue;
                     }
@@ -447,8 +453,9 @@ fn main() {
         }
 
         // Pen lift can arrive as silence (no RELEASE) if the window loses
-        // focus mid-stroke; commit after 600ms of no pen movement.
-        if pen_down && dirty_since.elapsed().as_millis() > 600 {
+        // focus mid-stroke; commit only when events themselves stop — a pen
+        // held still keeps trickling events and belongs to hold-to-snap.
+        if pen_down && last_pen_event.elapsed().as_millis() > 600 {
             pen_down = false;
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
