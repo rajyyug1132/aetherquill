@@ -53,6 +53,13 @@ light) + modifying signs and shows the spell activating on the e-ink screen.
   run. ⚠️ xovi does NOT auto-start after reboot — must run
   `/home/root/xovi/start` (or wire persistence; check vellum for a service
   package before hand-rolling). AppLoad confirmed visible in xochitl.
+- **Phase-4 gate PASSED 2026-07-16:** hello_ink smoke test ran on device via
+  AppLoad — draw + tap-to-exit + clean return to xochitl confirmed by user.
+  Critical fix found in the process: riddle's qtfb wire offsets are 64-bit
+  (Paper Pro); RM2's armv7 xochitl uses union @4 / u32 shmSize — see
+  `device/src/qtfb.rs` header note. Deploy dir:
+  `/home/root/xovi/exthome/appload/<app>/` with `external.manifest.json`
+  (`"qtfb": true` → QTFB_KEY env).
 - T1 recon done 2026-07-09 (re-run 2026-07-10 after user's OS update):
   device otherwise 100% stock (no toltec/rm2fb/wha dir), 5.7G free,
   Wacom I2C Digitizer + pt_mt input devices present.
