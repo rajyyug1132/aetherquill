@@ -138,6 +138,47 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .collect()
 }
 
+/// Snap a finished-looking stroke to a perfect line or circle (reMarkable
+/// "perfect shapes" style). Returns None when the stroke isn't close enough
+/// to either. Winding of circles is preserved — spell direction semantics
+/// (sign rotation) read stroke orientation.
+fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
+    let len = path_length(points);
+    if points.len() < 8 || len < 100.0 {
+        return None;
+    }
+    let (p0, pn) = (points[0], points[points.len() - 1]);
+    let end_dist = (pn.0 - p0.0).hypot(pn.1 - p0.1);
+
+    // Straight line: path barely longer than the endpoint chord.
+    if end_dist / len > 0.95 {
+        return Some((0..16).map(|i| {
+            let t = i as f64 / 15.0;
+            (p0.0 + (pn.0 - p0.0) * t, p0.1 + (pn.1 - p0.1) * t)
+        }).collect());
+    }
+
+    // Circle: centroid fit, low radius variance, ends near each other.
+    let n = points.len() as f64;
+    let (cx, cy) = points.iter().fold((0.0, 0.0), |(ax, ay), p| (ax + p.0, ay + p.1));
+    let (cx, cy) = (cx / n, cy / n);
+    let radii: Vec<f64> = points.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
+    let mean_r = radii.iter().sum::<f64>() / n;
+    let dev = (radii.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>() / n).sqrt();
+    let closed = end_dist < mean_r * 0.5;
+    if !(closed && mean_r > 30.0 && dev / mean_r < 0.18) {
+        return None;
+    }
+    // Winding via signed area.
+    let signed_area: f64 = points.windows(2).map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1).sum();
+    let dir = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+    let start_angle = (p0.1 - cy).atan2(p0.0 - cx);
+    Some((0..=64).map(|i| {
+        let a = start_angle + dir * std::f64::consts::TAU * i as f64 / 64.0;
+        (cx + mean_r * a.cos(), cy + mean_r * a.sin())
+    }).collect())
+}
+
 fn draw_chrome(fb: &mut Fb) {
     fb.fill_rect(0, 0, W, CHROME_H, WHITE);
     fb.rect_outline(12, 15, BTN_W, BTN_H, 3, BLACK);
@@ -156,13 +197,28 @@ fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
     let _ = client.update_partial(left, 0, width, CHROME_H);
 }
 
-fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke]) {
+/// Full redraw. When a complete ring is known, its member strokes render as
+/// one perfect circle (display-only snap — recognition still sees raw points).
+fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>) {
     fb.fill_rect(0, 0, W, H, WHITE);
     draw_chrome(fb);
+    let ring_ids: &[String] = ring.filter(|r| r.complete).map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
+        if ring_ids.contains(&stroke.id) {
+            continue;
+        }
         for w in stroke.points.windows(2) {
             fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
         }
+    }
+    if let Some(r) = ring.filter(|r| r.complete) {
+        fb.circle(
+            (r.center.x / CANVAS_SCALE) as i32,
+            (r.center.y / CANVAS_SCALE) as i32,
+            (r.radius / CANVAS_SCALE) as i32,
+            INK_W,
+            BLACK,
+        );
     }
     let _ = client.update_all();
 }
@@ -180,8 +236,10 @@ struct SpellOutcome {
 }
 
 fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
+    let t0 = Instant::now();
     let raw = to_raw_strokes(strokes);
     let result = classify_drawing(&raw, previous_ring, dictionary, "0.2.0", &INPUT, &RING, &LAYERS, &RECOGNITION);
+    eprintln!("recognize: {} strokes in {}ms", strokes.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
     SpellOutcome {
         ring: if result.ring.found { Some(result.ring) } else { None },
@@ -271,6 +329,13 @@ fn main() {
     // the qtfb socket, lags the panel, and drops input events.
     let mut dirty_rect: Option<(i32, i32, i32, i32)> = None; // x0,y0,x1,y1
     let mut last_flush = Instant::now();
+    // Hold-to-snap (reMarkable "perfect shapes"): pen held still mid-contact
+    // for 600ms snaps the in-progress stroke to a line/circle.
+    let mut hold_anchor = (0.0_f64, 0.0_f64);
+    let mut hold_since = Instant::now();
+    let mut hold_snapped = false;
+    // Auto ring snap: redraw once per newly completed ring.
+    let mut snapped_ring_ids: Vec<String> = Vec::new();
 
     loop {
         // Block until the socket is readable (input or disconnect).
@@ -284,16 +349,19 @@ fn main() {
         };
 
         for event in events {
-            // ponytail: temp debug for first on-device bring-up; delete once pen works
-            eprintln!("evt type={:#x} x={} y={} d={}", event.input_type, event.x, event.y, event.d);
             match event.input_type {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
                     let (x, y) = (event.x as f64, event.y as f64);
                     if y < CHROME_H as f64 {
                         continue;
                     }
+                    if (x - hold_anchor.0).hypot(y - hold_anchor.1) > 6.0 {
+                        hold_anchor = (x, y);
+                        hold_since = Instant::now();
+                    }
                     if !pen_down {
                         pen_down = true;
+                        hold_snapped = false;
                         current = vec![(x, y)];
                         continue;
                     }
@@ -322,10 +390,15 @@ fn main() {
                         next_id += 1;
                         let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
                         previous_ring = outcome.ring.clone();
+                        let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+                        if ring_ids != snapped_ring_ids {
+                            snapped_ring_ids = ring_ids;
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                        }
                         render_feedback(&mut fb, &client, &outcome, &mut last_activation);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
-                        redraw_all(&mut fb, &client, &strokes);
+                        redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
                     }
                 }
                 qtfb::INPUT_TOUCH_PRESS => {
@@ -339,9 +412,10 @@ fn main() {
                     } else {
                         continue;
                     }
-                    redraw_all(&mut fb, &client, &strokes);
                     let outcome = recognize(&dictionary, &strokes, None);
                     previous_ring = outcome.ring.clone();
+                    snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
                     render_feedback(&mut fb, &client, &outcome, &mut last_activation);
                 }
                 _ => {}
@@ -357,6 +431,21 @@ fn main() {
             }
         }
 
+        // Hold-to-snap: pen still on the panel (events keep arriving inside
+        // the 6px anchor) for 600ms — snap the in-progress stroke.
+        if pen_down && !hold_snapped && hold_since.elapsed().as_millis() > 600 {
+            hold_snapped = true;
+            if let Some(snapped) = snap_stroke(&current) {
+                current = snapped;
+                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                for w in current.windows(2) {
+                    fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
+                }
+                let _ = client.update_all();
+                dirty_rect = None;
+            }
+        }
+
         // Pen lift can arrive as silence (no RELEASE) if the window loses
         // focus mid-stroke; commit after 600ms of no pen movement.
         if pen_down && dirty_since.elapsed().as_millis() > 600 {
@@ -367,6 +456,11 @@ fn main() {
                 next_id += 1;
                 let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
                 previous_ring = outcome.ring.clone();
+                let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+                if ring_ids != snapped_ring_ids {
+                    snapped_ring_ids = ring_ids;
+                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                }
                 render_feedback(&mut fb, &client, &outcome, &mut last_activation);
             }
         }
