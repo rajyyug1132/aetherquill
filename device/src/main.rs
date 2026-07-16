@@ -23,6 +23,9 @@ use recognizer::stroke_cleaner::RawStroke;
 
 mod grimoire;
 mod qtfb;
+mod shapes;
+
+use shapes::{path_length, snap_stroke};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -133,10 +136,6 @@ struct ScreenStroke {
     points: Vec<(f64, f64)>,
 }
 
-fn path_length(points: &[(f64, f64)]) -> f64 {
-    points.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum()
-}
-
 fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
     strokes
         .iter()
@@ -147,173 +146,7 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .collect()
 }
 
-/// Ramer-Douglas-Peucker polyline simplification — keeps only corners.
-fn rdp(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-    let (a, b) = (points[0], points[points.len() - 1]);
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let seg_len = dx.hypot(dy).max(1e-9);
-    let (mut max_d, mut max_i) = (0.0, 0);
-    for (i, p) in points.iter().enumerate().skip(1).take(points.len() - 2) {
-        let d = ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / seg_len;
-        if d > max_d {
-            max_d = d;
-            max_i = i;
-        }
-    }
-    if max_d <= epsilon {
-        return vec![a, b];
-    }
-    let mut left = rdp(&points[..=max_i], epsilon);
-    let right = rdp(&points[max_i..], epsilon);
-    left.pop();
-    left.extend(right);
-    left
-}
-
-/// Sampled points along a polygon's edges (winding = corner order).
-fn polygon_points(corners: &[(f64, f64)]) -> Vec<(f64, f64)> {
-    let mut out = Vec::new();
-    for w in corners.windows(2) {
-        for i in 0..12 {
-            let t = i as f64 / 12.0;
-            out.push((w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t));
-        }
-    }
-    out.push(*corners.last().unwrap());
-    out
-}
-
-/// Snap a finished-looking stroke to a perfect line, triangle, rectangle, or
-/// circle (reMarkable "perfect shapes" style). Returns None when the stroke
-/// isn't close enough to any. Winding is preserved — spell direction
-/// semantics (sign rotation) read stroke orientation.
-fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
-    let len = path_length(points);
-    if points.len() < 8 || len < 100.0 {
-        return None;
-    }
-    let (p0, pn) = (points[0], points[points.len() - 1]);
-    let end_dist = (pn.0 - p0.0).hypot(pn.1 - p0.1);
-
-    // Straight line: path barely longer than the endpoint chord.
-    if end_dist / len > 0.95 {
-        return Some((0..16).map(|i| {
-            let t = i as f64 / 15.0;
-            (p0.0 + (pn.0 - p0.0) * t, p0.1 + (pn.1 - p0.1) * t)
-        }).collect());
-    }
-
-    let (min_x, max_x) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
-    let (min_y, max_y) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
-    let diag = (max_x - min_x).hypot(max_y - min_y);
-    let closed = end_dist < diag * 0.25;
-
-    // Triangle / rectangle: closed stroke that cleans up to 3-4 corners.
-    if closed {
-        // Resample first — pen points cluster where the hand slows (corners!),
-        // which skews RDP; a uniform 6px spacing evens the vote.
-        let mut resampled = vec![points[0]];
-        let mut acc = 0.0;
-        for w in points.windows(2) {
-            let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-            acc += d;
-            if acc >= 6.0 {
-                resampled.push(w[1]);
-                acc = 0.0;
-            }
-        }
-        // Close the loop before simplifying so the start/end seam isn't a corner.
-        resampled.push(p0);
-        let mut corners = rdp(&resampled, diag * 0.025);
-        // Merge corners that are practically the same point (jitter doubles),
-        // then drop near-collinear ones (mid-edge phantom corners).
-        corners.dedup_by(|b, a| (b.0 - a.0).hypot(b.1 - a.1) < diag * 0.08);
-        let mut i = 1;
-        while i + 1 < corners.len() {
-            let (a, b, c) = (corners[i - 1], corners[i], corners[i + 1]);
-            let (v1, v2) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
-            let cross = v1.0 * v2.1 - v1.1 * v2.0;
-            let dot = v1.0 * v2.0 + v1.1 * v2.1;
-            // Turn angle under ~14 degrees = straight-enough edge, not a corner.
-            if cross.atan2(dot).abs() < 0.25 {
-                corners.remove(i);
-            } else {
-                i += 1;
-            }
-        }
-        // Seam handling: the stroke's start point is a locked RDP endpoint, so
-        // a shape begun mid-edge keeps it as a phantom corner — test the seam
-        // for collinearity and rotate it out.
-        if corners.len() >= 4 {
-            let (a, b, c) = (corners[corners.len() - 2], corners[0], corners[1]);
-            let (v1, v2) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
-            if (v1.0 * v2.1 - v1.1 * v2.0).atan2(v1.0 * v2.0 + v1.1 * v2.1).abs() < 0.25 {
-                corners.remove(0);
-                *corners.last_mut().unwrap() = corners[0];
-            }
-        }
-        // Ensure loop closure after cleanup.
-        if corners.len() >= 2 {
-            let (first, last) = (corners[0], *corners.last().unwrap());
-            if (first.0 - last.0).hypot(first.1 - last.1) > 1.0 {
-                corners.push(first);
-            }
-        }
-        let n_corners = corners.len() - 1; // first == last (closed loop)
-        if n_corners == 3 {
-            return Some(polygon_points(&corners));
-        }
-        if n_corners == 4 {
-            // Near-axis-aligned quads become perfect bounding-box rectangles.
-            let axis_aligned = corners.windows(2).all(|w| {
-                let ang = (w[1].1 - w[0].1).atan2(w[1].0 - w[0].0).abs();
-                ang < 0.18 || (ang - std::f64::consts::FRAC_PI_2).abs() < 0.18 || (ang - std::f64::consts::PI).abs() < 0.18
-            });
-            if axis_aligned {
-                // Keep winding: order bbox corners starting nearest the
-                // stroke's first corner, following the original direction.
-                let signed_area: f64 = points.windows(2).map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1).sum();
-                let mut rect = vec![(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)];
-                if signed_area < 0.0 {
-                    rect.reverse();
-                }
-                let start = rect.iter().enumerate().min_by(|a, b| {
-                    let da = (a.1.0 - corners[0].0).hypot(a.1.1 - corners[0].1);
-                    let db = (b.1.0 - corners[0].0).hypot(b.1.1 - corners[0].1);
-                    da.partial_cmp(&db).unwrap()
-                }).map(|(i, _)| i).unwrap_or(0);
-                rect.rotate_left(start);
-                rect.push(rect[0]);
-                return Some(polygon_points(&rect));
-            }
-            return Some(polygon_points(&corners));
-        }
-    }
-
-    // Circle: centroid fit, low radius variance, ends near each other.
-    let n = points.len() as f64;
-    let (cx, cy) = points.iter().fold((0.0, 0.0), |(ax, ay), p| (ax + p.0, ay + p.1));
-    let (cx, cy) = (cx / n, cy / n);
-    let radii: Vec<f64> = points.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
-    let mean_r = radii.iter().sum::<f64>() / n;
-    let dev = (radii.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>() / n).sqrt();
-    if !(end_dist < mean_r * 0.5 && mean_r > 30.0 && dev / mean_r < 0.18) {
-        return None;
-    }
-    // Winding via signed area.
-    let signed_area: f64 = points.windows(2).map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1).sum();
-    let dir = if signed_area >= 0.0 { 1.0 } else { -1.0 };
-    let start_angle = (p0.1 - cy).atan2(p0.0 - cx);
-    Some((0..=64).map(|i| {
-        let a = start_angle + dir * std::f64::consts::TAU * i as f64 / 64.0;
-        (cx + mean_r * a.cos(), cy + mean_r * a.sin())
-    }).collect())
-}
-
-// Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
+, reMarkable-style: pen, eraser, undo, redo, clear.
 const SIDEBAR_W: i32 = 110;
 const STATUS_H: i32 = 64;
 const ICON_X: i32 = 13;
