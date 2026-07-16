@@ -3,7 +3,12 @@
 //! constants; wire format verified against rm-appload src/qtfb/common.h.
 //!
 //!   ClientMessage  = 24 bytes, type:u8 @0, payload @4
-//!   ServerMessage  = 32 bytes, type:u8 @0, payload @8
+//!   ServerMessage  = 24 bytes, type:u8 @0, payload @4
+//!
+//! NOTE: riddle's offsets (payload @8, shmSize:u64) are for the Paper Pro's
+//! 64-bit xochitl. RM2 xochitl is armv7 (32-bit): size_t=4, union align=4,
+//! so server payload starts @4 and shmSize is u32 @8. Verified against
+//! rm-appload src/qtfb/common.h struct layout + live failure on device.
 
 use std::io;
 use std::os::fd::RawFd;
@@ -79,16 +84,16 @@ impl QtfbClient {
         msg[8] = FBFMT_RM2FB;
         send_all(fd, &msg)?;
 
-        // Init reply: shmKey i32 @8, shmSize u64 @16. Server closing without
-        // replying (recv == 0) means init was rejected.
+        // Init reply (armv7): shmKey i32 @4, shmSize u32 @8. Server closing
+        // without replying (recv == 0) means init was rejected.
         let mut reply = [0u8; 32];
         let n = unsafe { libc::recv(fd, reply.as_mut_ptr() as *mut libc::c_void, 32, 0) };
-        if n <= 0 {
+        if n < 12 {
             unsafe { libc::close(fd) };
-            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "qtfb server rejected init (no reply)"));
+            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "qtfb server rejected init (no/short reply)"));
         }
-        let shm_key = i32::from_le_bytes(reply[8..12].try_into().unwrap());
-        let shm_size = u64::from_le_bytes(reply[16..24].try_into().unwrap()) as usize;
+        let shm_key = i32::from_le_bytes(reply[4..8].try_into().unwrap());
+        let shm_size = u32::from_le_bytes(reply[8..12].try_into().unwrap()) as usize;
 
         let shm_path = format!("/dev/shm/qtfb_{}\0", shm_key);
         let shm_fd = unsafe { libc::open(shm_path.as_ptr() as *const libc::c_char, libc::O_RDWR) };
@@ -178,13 +183,14 @@ impl QtfbClient {
                 }
                 return Err(e);
             }
-            if buf[0] == MESSAGE_USERINPUT && n >= 28 {
+            // UserInputContents (armv7): inputType @4, devId @8, x @12, y @16, d @20.
+            if buf[0] == MESSAGE_USERINPUT && n >= 24 {
                 out.push(InputEvent {
-                    input_type: i32::from_le_bytes(buf[8..12].try_into().unwrap()),
-                    dev_id: i32::from_le_bytes(buf[12..16].try_into().unwrap()),
-                    x: i32::from_le_bytes(buf[16..20].try_into().unwrap()),
-                    y: i32::from_le_bytes(buf[20..24].try_into().unwrap()),
-                    d: i32::from_le_bytes(buf[24..28].try_into().unwrap()),
+                    input_type: i32::from_le_bytes(buf[4..8].try_into().unwrap()),
+                    dev_id: i32::from_le_bytes(buf[8..12].try_into().unwrap()),
+                    x: i32::from_le_bytes(buf[12..16].try_into().unwrap()),
+                    y: i32::from_le_bytes(buf[16..20].try_into().unwrap()),
+                    d: i32::from_le_bytes(buf[20..24].try_into().unwrap()),
                 });
             }
         }
