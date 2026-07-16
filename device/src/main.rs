@@ -138,10 +138,49 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .collect()
 }
 
-/// Snap a finished-looking stroke to a perfect line or circle (reMarkable
-/// "perfect shapes" style). Returns None when the stroke isn't close enough
-/// to either. Winding of circles is preserved — spell direction semantics
-/// (sign rotation) read stroke orientation.
+/// Ramer-Douglas-Peucker polyline simplification — keeps only corners.
+fn rdp(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let (a, b) = (points[0], points[points.len() - 1]);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let seg_len = dx.hypot(dy).max(1e-9);
+    let (mut max_d, mut max_i) = (0.0, 0);
+    for (i, p) in points.iter().enumerate().skip(1).take(points.len() - 2) {
+        let d = ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / seg_len;
+        if d > max_d {
+            max_d = d;
+            max_i = i;
+        }
+    }
+    if max_d <= epsilon {
+        return vec![a, b];
+    }
+    let mut left = rdp(&points[..=max_i], epsilon);
+    let right = rdp(&points[max_i..], epsilon);
+    left.pop();
+    left.extend(right);
+    left
+}
+
+/// Sampled points along a polygon's edges (winding = corner order).
+fn polygon_points(corners: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for w in corners.windows(2) {
+        for i in 0..12 {
+            let t = i as f64 / 12.0;
+            out.push((w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t));
+        }
+    }
+    out.push(*corners.last().unwrap());
+    out
+}
+
+/// Snap a finished-looking stroke to a perfect line, triangle, rectangle, or
+/// circle (reMarkable "perfect shapes" style). Returns None when the stroke
+/// isn't close enough to any. Winding is preserved — spell direction
+/// semantics (sign rotation) read stroke orientation.
 fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     let len = path_length(points);
     if points.len() < 8 || len < 100.0 {
@@ -158,6 +197,52 @@ fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
         }).collect());
     }
 
+    let (min_x, max_x) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+    let (min_y, max_y) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+    let diag = (max_x - min_x).hypot(max_y - min_y);
+    let closed = end_dist < diag * 0.25;
+
+    // Triangle / rectangle: closed stroke that simplifies to 3-4 corners.
+    if closed {
+        // Close the loop before simplifying so the start/end seam isn't a corner.
+        // Epsilon 3% of diag: coarse enough to eat hand shake, fine enough that a
+        // circle keeps ~8 corners and never lands in the 3-5 polygon band. A shape
+        // started mid-edge gains one collinear phantom corner — harmless, the
+        // polygon still renders straight — hence the band reaching 5.
+        let mut looped = points.to_vec();
+        looped.push(p0);
+        let corners = rdp(&looped, diag * 0.03);
+        let n_corners = corners.len() - 1; // first == last after the loop close
+        if n_corners == 3 {
+            return Some(polygon_points(&corners));
+        }
+        if (4..=5).contains(&n_corners) {
+            // Near-axis-aligned quads become perfect bounding-box rectangles.
+            let axis_aligned = corners.windows(2).all(|w| {
+                let ang = (w[1].1 - w[0].1).atan2(w[1].0 - w[0].0).abs();
+                ang < 0.18 || (ang - std::f64::consts::FRAC_PI_2).abs() < 0.18 || (ang - std::f64::consts::PI).abs() < 0.18
+            });
+            if axis_aligned {
+                // Keep winding: order bbox corners starting nearest the
+                // stroke's first corner, following the original direction.
+                let signed_area: f64 = points.windows(2).map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1).sum();
+                let mut rect = vec![(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)];
+                if signed_area < 0.0 {
+                    rect.reverse();
+                }
+                let start = rect.iter().enumerate().min_by(|a, b| {
+                    let da = (a.1.0 - corners[0].0).hypot(a.1.1 - corners[0].1);
+                    let db = (b.1.0 - corners[0].0).hypot(b.1.1 - corners[0].1);
+                    da.partial_cmp(&db).unwrap()
+                }).map(|(i, _)| i).unwrap_or(0);
+                rect.rotate_left(start);
+                rect.push(rect[0]);
+                return Some(polygon_points(&rect));
+            }
+            return Some(polygon_points(&corners));
+        }
+    }
+
     // Circle: centroid fit, low radius variance, ends near each other.
     let n = points.len() as f64;
     let (cx, cy) = points.iter().fold((0.0, 0.0), |(ax, ay), p| (ax + p.0, ay + p.1));
@@ -165,8 +250,7 @@ fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     let radii: Vec<f64> = points.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
     let mean_r = radii.iter().sum::<f64>() / n;
     let dev = (radii.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>() / n).sqrt();
-    let closed = end_dist < mean_r * 0.5;
-    if !(closed && mean_r > 30.0 && dev / mean_r < 0.18) {
+    if !(end_dist < mean_r * 0.5 && mean_r > 30.0 && dev / mean_r < 0.18) {
         return None;
     }
     // Winding via signed area.
