@@ -1,179 +1,157 @@
 # Aetherquill
 
-**Draw spells on a reMarkable 2.**
+## Draw working spells on a reMarkable 2, Witch Hat Atelier style
 
-Aetherquill is a spell-drawing simulator, in the spirit of [*Witch Hat
-Atelier*](https://en.wikipedia.org/wiki/Witch_Hat_Atelier), built for a
-reMarkable 2's e-ink screen. Draw a ring with the pen, draw a sigil in its
-center, and the tablet recognizes the glyph, compiles it into a spell, and
-shows it activating on the page — a status line, a clean fitted-ring overlay,
-and a region flash with the element name.
+Aetherquill turns a reMarkable 2 e-ink tablet into a spell-drawing simulator
+in the spirit of [*Witch Hat
+Atelier*](https://en.wikipedia.org/wiki/Witch_Hat_Atelier). Draw a spell ring
+with the pen, draw a sigil in its center, close the ring — the tablet
+recognizes the glyph, compiles it into a spell, and plays an elemental
+activation animation right on the page: rising flames, expanding ripples,
+curling wind, rising earth, radiant light. It runs as a windowed app inside
+the stock reMarkable UI. No phone, no screen glow, no network — just ink on
+paper that means something.
 
-No app, no phone, no screen glow, no network. Just ink on paper that means
-something.
+Recognition is a 1:1 Rust port of
+[wha-spell-simulator](https://github.com/ytnrvdf/wha-spell-simulator)'s
+pipeline (try its [live web version](https://ytnrvdf.github.io/wha-spell-simulator)
+— same recognizer, same dictionaries). The port is verified module-by-module
+against the vendored original JS with 83 parity tests.
 
 ```
 draw a ring ──► draw a sigil inside it ──► close the ring
-                                                  │
-                                                  ▼
-                          ring + sigil + signs recognized, spell compiled
-                                                  │
-                                                  ▼
-                     status line · ring overlay · activation flash on the page
+                                                 │
+                                                 ▼
+                       ring + sigil recognized, spell compiled in-process
+                                                 │
+                                                 ▼
+              ring snaps to a perfect circle · elemental animation plays
+                        · spell logged to the on-device grimoire
 ```
 
-## How it works
-
-Recognition — ring detection, sigil/sign matching, spell compilation — is a
-1:1 Rust port of [wha-spell-simulator](https://github.com/ytnrvdf/wha-spell-simulator)'s
-pipeline, checked module-by-module against the original: the vendored JS
-(`service/vendor/wha/`, MIT, kept unmodified) is the parity ground truth for
-every `recognizer/` module, verified with 83 passing tests including a
-full end-to-end run against real fixture drawings for every element.
-`recognizer/` is a standalone, dependency-free crate — it compiles and tests
-on any OS, no ARM toolchain required.
-
-The on-device pen/framebuffer layer (`device/`) is a from-scratch Rust
-client built on [`libremarkable`](https://github.com/canselcik/libremarkable),
-linking `recognizer` directly — no network, no Node, no toltec runtime
-dependency. The takeover launch pattern (stop the stock UI, draw directly to
-the e-ink panel, always restore the stock UI on exit) follows the convention
-established by [riddle](https://github.com/MaximeRivest/riddle), an
-enchanted-diary app for the reMarkable Paper Pro — riddle's display internals
-are Paper-Pro-specific and don't transfer, but its exit-safety pattern does.
-
-## Architecture
-
 ```
-reMarkable 2 (device/, Rust)
-  pen ──► ink capture ──► local e-ink render (DU partial refresh, instant)
+reMarkable 2, inside stock xochitl (windowed via xovi + AppLoad + qtfb)
+  pen ──► qtfb input events ──► ink to shared-memory fb (~25Hz coalesced refresh)
               │ pen-up
               ▼  in-process call, no network
-        recognizer::classify_drawing()
-        recognizer::compile_spell()
+        recognizer::classify_drawing() ──► recognizer::compile_spell()
               │
               ▼
-  status bar · ring overlay · activation flash · grimoire log (spell history)
+  status line · perfect-circle ring snap · per-element activation animation
 ```
 
-`recognizer/` (the port) and `device/` (the RM2 binary + UI) are separate
-crates on purpose: `recognizer/` needs no `libremarkable` dependency and no
-ARM cross-compiler, so its correctness is verified entirely off-device.
-`device/` is thin — input handling, e-ink drawing, and wiring the two
-`recognizer` calls into the UI's status/overlay/flash rendering.
+## Using it (on a tablet)
 
-**Status:** `recognizer/` is fully ported and tested (83 tests, including
-end-to-end parity against the real JS pipeline). `device/` is written against
-`recognizer`'s tested API and libremarkable's documented API, but has not yet
-been compiled — `libremarkable` only targets Linux/ARM, and no ARM toolchain,
-WSL, or Docker was available during the port. The safety-gated on-device
-rollout (OS-compatibility check, rm2fb acquisition, a minimal smoke-test
-binary before the real app ever touches the tablet) is tracked in
-[CLAUDE.md](CLAUDE.md) and is a human-supervised step — see
-[On-device deployment](#on-device-deployment-human-supervised) below.
+**You need:** a reMarkable 2 on OS 3.27.x, SSH access over USB
+(`ssh root@10.11.99.1`; password under Settings → About → Copyrights),
+and the [Vellum](https://github.com/vellum-dev/vellum) package manager stack.
 
-An earlier tethered prototype (`client/` + `service/server.js`, recognition
-running on a host machine over TCP) is kept as a working fallback until
-`device/` is verified on real hardware; see
-[Tethered prototype (fallback)](#tethered-prototype-fallback).
+1. **Install the runtime stack** (all of it lives in `/home/root` only —
+   rollback is `rm -rf /home/root/.vellum /home/root/xovi` + reboot):
 
-## Repository layout
+   ```sh
+   # on the tablet, via SSH — install Vellum per its README, then:
+   vellum update
+   vellum add xovi xovi-extensions appload
+   /home/root/xovi/rebuild_hashtable
+   reboot
+   ```
 
-```
-recognizer/  the ported recognition pipeline — pure Rust, zero libremarkable
-             dependency, tested standalone (cargo test, 83 passing)
-device/      the on-device RM2 binary: input, e-ink rendering, grimoire log,
-             links recognizer directly (unverified — see Status above)
-service/     legacy tethered oracle: server.js (TCP), dictionary.js (loader),
-             test.js, vendor/wha/ (unmodified upstream JS — never edit;
-             recognizer/'s parity ground truth)
-client/      the tethered prototype's on-device binary (fallback)
-scripts/     deploy + takeover launch scripts (always restore the stock UI
-             on exit; home-dir-only watchdog)
-TODOS.md     tracked deferred work
-CLAUDE.md    durable architecture decisions and constraints
-```
+   ⚠️ xovi does **not** auto-start after a reboot: run `/home/root/xovi/start`
+   after each boot (the screen flickers as the UI reloads with AppLoad).
 
-## Building `recognizer/` (works on any OS, no tablet needed)
+2. **Build and deploy Aetherquill** (from any OS with Rust — plain Windows
+   works, no WSL/Docker):
 
-```sh
-cd recognizer && cargo test
-```
+   ```sh
+   rustup target add armv7-unknown-linux-musleabihf
+   cargo build --release --target armv7-unknown-linux-musleabihf --manifest-path device/Cargo.toml
 
-83 tests, including a full pipeline parity check against real fixture
-drawings (`recognizer/fixtures/pipeline.json`, generated by
-`service/parity-gen.mjs` from the vendored JS). Regenerate fixtures after any
-upstream `wha-spell-simulator` change:
+   ssh root@10.11.99.1 "mkdir -p /home/root/xovi/exthome/appload/aetherquill /home/root/wha/spells"
+   scp device/appload/aetherquill/external.manifest.json root@10.11.99.1:/home/root/xovi/exthome/appload/aetherquill/
+   scp device/target/armv7-unknown-linux-musleabihf/release/aetherquill root@10.11.99.1:/home/root/xovi/exthome/appload/aetherquill/
+   ssh root@10.11.99.1 "chmod +x /home/root/xovi/exthome/appload/aetherquill/aetherquill"
+   ```
 
-```sh
-node service/parity-gen.mjs
-```
+3. **Cast**: open AppLoad in the tablet UI, launch Aetherquill, draw a big
+   ring, draw a sigil (fire, water, wind, earth, or light) in its center.
+   Sample layouts: `service/vendor/wha/src/dictionary/sample-spells.json`.
 
-## On-device deployment (human-supervised)
-
-Deploying to the actual tablet is a phased, safety-gated process — not a
-single command. See [CLAUDE.md](CLAUDE.md) for the full rollout plan
-(device recon, rm2fb acquisition without toltec's package-manager bootstrap,
-a minimal smoke-test binary before the real app ever runs). In short:
-
-```sh
-# build device/ for the tablet (needs Docker for `cross`, or WSL + the ARM target)
-cd device && cross build --release --target armv7-unknown-linux-gnueabihf
-
-# deploy + run (script always restores the stock UI on exit, including on a hang)
-scp target/armv7-unknown-linux-gnueabihf/release/device root@10.11.99.1:/home/root/wha/wha-rm2
-ssh root@10.11.99.1 /home/root/wha/run-on-device.sh
-```
-
-Draw a large ring, then a sigil (fire, water, wind, earth, or light) in its
-center. Closing the ring with a valid sigil activates the spell. Sample
-layouts live in `service/vendor/wha/src/dictionary/sample-spells.json`, or
-try the [live web version](https://ytnrvdf.github.io/wha-spell-simulator) of
-the upstream simulator — same recognizer, same dictionaries.
-
-### Controls (on device)
+### Controls
 
 | Do this | And |
 |---|---|
-| Draw with the pen | Ink appears instantly; recognition runs on every pen-up |
-| Tap **UNDO** (top-left) | Remove the last stroke |
-| Tap **CLEAR** (top-right) | Wipe the page |
-| Tap with 4+ fingers | Exit — the stock UI restarts automatically |
+| Draw with the pen | Ink appears; recognition runs on every pen-up |
+| Close a ring | It snaps to a perfect circle |
+| Hold the pen still ~0.6s at a stroke's end | Stroke snaps to a perfect line / triangle / rectangle / circle |
+| Sidebar: pen / eraser | Switch tool (eraser deletes strokes the pen touches) |
+| Sidebar: ↶ / ↷ | Undo / redo (erasures and CLEAR are recoverable too) |
+| Sidebar: ✕ | Clear the page |
+| One-finger drag on a stroke | Move it; recognition re-runs on drop |
+| Close the window from AppLoad | Exit — stock UI keeps running throughout |
 
-## Tethered prototype (fallback)
+## Hacking on it
 
-The original tethered build still works if you'd rather iterate without
-touching the tablet's deployed binary, or while `device/` is unverified:
+Two crates, split on purpose:
 
-```sh
-# 1. sanity-check the recognition pipeline — no tablet needed
-cd service && node --test
-
-# 2. start the recognition server on your host machine (listens on :7777)
-node service/server.js
-
-# 3. build + deploy the client
-cd client && cross build --release --target armv7-unknown-linux-gnueabihf
-cd .. && ./scripts/deploy.sh
-
-# 4. run it
-ssh root@10.11.99.1 /home/root/wha/run-on-device.sh
+```
+recognizer/  the ported recognition pipeline — pure Rust, zero device deps,
+             compiles + tests on any OS (83 parity tests)
+device/      the RM2 app: qtfb client, sidebar UI, shape snapping, effects.
+             lib part (shapes.rs, render.rs) is host-testable; the binary
+             is ARM-only
+service/     parity ground truth: vendor/wha/ (unmodified upstream JS — never
+             edit), parity-gen.mjs (regenerates fixtures), test.js
+TODOS.md     tracked deferred work
+CLAUDE.md    durable architecture decisions, device state, phase-gate history
 ```
 
-### Prerequisites
+```sh
+# recognition pipeline — the core, fully testable off-device
+cd recognizer && cargo test          # 83 tests incl. end-to-end parity
 
-- **Tablet**: reMarkable 2, SSH access, [toltec](https://toltec-dev.org/)
-  with the `display` (rm2fb) package installed.
-- **Host**: Node ≥ 18 (tethered fallback only). For either build: Rust +
-  [`cross`](https://github.com/cross-rs/cross) (needs Docker), or WSL with
-  the `armv7-unknown-linux-gnueabihf` target and a matching GCC linker.
-  Plain Windows MSVC Rust cannot link the ARM binary.
+# device logic that doesn't need a device
+cd device && cargo test --lib        # shape-snapping emulation tests
+cargo run --example effect_preview   # renders all 5 elemental effects to a PPM
 
-## Known limits (prototype)
+# JS-side parity ground truth
+cd service && node --test            # 3 tests
+node service/parity-gen.mjs          # regenerate fixtures after upstream changes
+```
 
-- Feedback is text + overlay + flash; no particle effects (e-ink can't do 60fps).
+The recognizer port is deliberately 1:1 with the JS — same function names
+(snake_cased), same structure, quirks reproduced faithfully (see LOOP.md for
+the porting recipe). Don't "improve" it; its only virtue is matching upstream
+so the parity tests stay meaningful.
+
+## Contributing
+
+Issues and PRs welcome. Ground rules:
+
+- Open an issue first for anything non-trivial.
+- `service/vendor/wha/` is never edited — it's the parity ground truth.
+- Changes to `recognizer/` must keep all 83 parity tests green; if upstream
+  moved, regenerate fixtures with `parity-gen.mjs` in the same PR.
+- Device-touching changes: prove what you can off-device first (host tests /
+  `effect_preview`), and note what was actually verified on hardware.
+- Everything deployed to the tablet must stay under `/home/root` — no system
+  partition, no `/etc`, no OTA involvement. That's the project's safety
+  property; don't break it.
+
+## Known issues
+
+- xovi doesn't auto-start after reboot — `/home/root/xovi/start` by hand
+  (persistence via a Vellum service package is unexplored).
+- The marker's built-in eraser end can't be detected: AppLoad's qtfb bridge
+  doesn't forward pen-vs-eraser (`devId` is a TODO upstream), hence the
+  eraser is a sidebar toggle.
+- Suspend/resume can leave a stale screen; redraw-on-resume is deferred
+  (TODOS.md).
 - One ring, one primary sigil per drawing (an upstream pipeline limit).
-- `device/` is unverified on real hardware — see [Status](#architecture) above.
+- Modifying signs (levitation/force/spread…) are recognized by the pipeline
+  but not yet part of the on-device flow.
+- E-ink animation is ~6 frames at ~12fps with partial refreshes — dramatic,
+  not smooth; ghosting varies by panel.
 
 ## License
 
