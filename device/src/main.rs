@@ -23,18 +23,15 @@ use recognizer::stroke_cleaner::RawStroke;
 
 mod grimoire;
 mod qtfb;
+mod render;
 mod shapes;
 
+use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
-const W: i32 = RM2_WIDTH as i32;
-const H: i32 = RM2_HEIGHT as i32;
-
-const WHITE: u16 = 0xFFFF;
-const BLACK: u16 = 0x0000;
-const GRAY: u16 = 0x8410; // mid-gray in RGB565
+const _: () = assert!(W == RM2_WIDTH as i32 && H == RM2_HEIGHT as i32);
 
 // ponytail: screen px -> web-canvas px so the vendored CONFIG's pixel-tuned
 // thresholds (ring.minRadius 70 etc.) hold unchanged on a 702x936 canvas.
@@ -43,93 +40,6 @@ const MIN_POINT_DIST: f64 = 1.4 / CANVAS_SCALE;
 const MIN_STROKE_LEN: f64 = 7.0 / CANVAS_SCALE;
 
 const INK_W: i32 = 3;
-
-struct Fb<'a> {
-    px: &'a mut [u16],
-}
-
-impl Fb<'_> {
-    fn set(&mut self, x: i32, y: i32, c: u16) {
-        if (0..W).contains(&x) && (0..H).contains(&y) {
-            self.px[(y * W + x) as usize] = c;
-        }
-    }
-
-    fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
-        for yy in y..(y + h) {
-            for xx in x..(x + w) {
-                self.set(xx, yy, c);
-            }
-        }
-    }
-
-    fn rect_outline(&mut self, x: i32, y: i32, w: i32, h: i32, t: i32, c: u16) {
-        self.fill_rect(x, y, w, t, c);
-        self.fill_rect(x, y + h - t, w, t, c);
-        self.fill_rect(x, y, t, h, c);
-        self.fill_rect(x + w - t, y, t, h, c);
-    }
-
-    /// Thick line as stamped disks along the segment.
-    fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, thickness: i32, c: u16) {
-        let (dx, dy) = ((x1 - x0) as f64, (y1 - y0) as f64);
-        let steps = dx.hypot(dy).ceil().max(1.0) as i32;
-        let r = thickness / 2;
-        for i in 0..=steps {
-            let t = i as f64 / steps as f64;
-            let cx = x0 + (dx * t) as i32;
-            let cy = y0 + (dy * t) as i32;
-            for oy in -r..=r {
-                for ox in -r..=r {
-                    if ox * ox + oy * oy <= r * r {
-                        self.set(cx + ox, cy + oy, c);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Arc from a0 to a1 radians (screen-space clockwise-positive).
-    fn arc(&mut self, cx: i32, cy: i32, radius: i32, a0: f64, a1: f64, thickness: i32, c: u16) {
-        let steps = (radius.max(8) * 8) as usize;
-        for i in 0..=steps {
-            let a = a0 + (a1 - a0) * i as f64 / steps as f64;
-            for t in 0..thickness {
-                let r = (radius + t) as f64;
-                self.set(cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32, c);
-            }
-        }
-    }
-
-    /// Circle outline (midpoint-ish via angle stepping — plenty for an overlay).
-    fn circle(&mut self, cx: i32, cy: i32, radius: i32, thickness: i32, c: u16) {
-        let steps = (radius.max(8) * 8) as usize;
-        for i in 0..steps {
-            let a = std::f64::consts::TAU * i as f64 / steps as f64;
-            for t in 0..thickness {
-                let r = (radius + t) as f64;
-                self.set(cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32, c);
-            }
-        }
-    }
-
-    /// 8x8 bitmap font scaled up; returns text width in px.
-    fn text(&mut self, x: i32, y: i32, s: &str, scale: i32, c: u16) -> i32 {
-        let mut cx = x;
-        for ch in s.chars() {
-            let glyph = font8x8::legacy::BASIC_LEGACY.get(ch as usize).copied().unwrap_or([0; 8]);
-            for (row, bits) in glyph.iter().enumerate() {
-                for col in 0..8 {
-                    if bits & (1 << col) != 0 {
-                        self.fill_rect(cx + col * scale, y + row as i32 * scale, scale, scale, c);
-                    }
-                }
-            }
-            cx += 8 * scale;
-        }
-        cx - x
-    }
-}
 
 struct ScreenStroke {
     id: String,
@@ -299,93 +209,23 @@ fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: O
     }
 }
 
-/// Spell activation burst, staged for e-ink: bold seal ring, then a radial
-/// ray burst, then the element name stamped large. Each stage is its own
-/// partial refresh (~180ms apart) so the panel animates instead of smearing.
-/// ponytail: element-agnostic burst; per-element effect art (flame/wave/gust
-/// shapes like the upstream demo.gif) can layer on later if wanted.
+/// Spell activation: plays the per-element effect animation (rising flames,
+/// ripples, curling wind, rising earth, radiant light — ported from the
+/// upstream particle renderer into 1-bit e-ink frames in `render::effect_frame`).
+/// Each frame refreshes only the annulus around the seal, so the sigil inside
+/// is untouched and the effect genuinely moves.
 fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str) {
-    let pad = radius + 110;
-    let flush = |client: &QtfbClient| {
+    let pad = radius + render::EFFECT_REACH;
+    let flush = |client: &QtfbClient, ms: u64| {
         let _ = client.update_partial((cx - pad).max(0), (cy - pad).max(0), pad * 2, pad * 2);
-        std::thread::sleep(std::time::Duration::from_millis(180));
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     };
-
-    // Stage 1: the seal itself flares — double bold ring.
-    fb.circle(cx, cy, radius + 10, 6, BLACK);
-    fb.circle(cx, cy, radius + 24, 2, BLACK);
-    flush(client);
-
-    // Stage 2: elemental burst.
-    let tau = std::f64::consts::TAU;
-    match element {
-        // Fire: jagged two-segment flame rays.
-        "fire" => {
-            for i in 0..16 {
-                let a = tau * i as f64 / 16.0;
-                let r0 = (radius + 30) as f64;
-                let r1 = (radius + 60) as f64;
-                let r2 = (radius + 100) as f64;
-                let (x0, y0) = (cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32);
-                let am = a + 0.09;
-                let (x1, y1) = (cx + (am.cos() * r1) as i32, cy + (am.sin() * r1) as i32);
-                let (x2, y2) = (cx + (a.cos() * r2) as i32, cy + (a.sin() * r2) as i32);
-                fb.line(x0, y0, x1, y1, 4, BLACK);
-                fb.line(x1, y1, x2, y2, 3, BLACK);
-            }
-        }
-        // Water: concentric ripple rings.
-        "water" => {
-            fb.circle(cx, cy, radius + 38, 3, BLACK);
-            fb.circle(cx, cy, radius + 62, 2, BLACK);
-            fb.circle(cx, cy, radius + 88, 1, BLACK);
-        }
-        // Wind: swept tangential arcs.
-        "wind" => {
-            for i in 0..12 {
-                let a = tau * i as f64 / 12.0;
-                let r = (radius + 55) as f64;
-                let (x0, y0) = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
-                let sweep = a + 0.55;
-                let (x1, y1) = (cx + (sweep.cos() * (r + 35.0)) as i32, cy + (sweep.sin() * (r + 35.0)) as i32);
-                fb.line(x0, y0, x1, y1, 3, BLACK);
-            }
-        }
-        // Earth: nested rotated squares.
-        "earth" => {
-            for (j, rot) in [0.0_f64, 0.26, 0.52].iter().enumerate() {
-                let r = (radius + 45 + j as i32 * 25) as f64;
-                let pts: Vec<(i32, i32)> = (0..4)
-                    .map(|k| {
-                        let a = rot + tau * k as f64 / 4.0;
-                        (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32)
-                    })
-                    .collect();
-                for k in 0..4 {
-                    let (p, q) = (pts[k], pts[(k + 1) % 4]);
-                    fb.line(p.0, p.1, q.0, q.1, 2, BLACK);
-                }
-            }
-        }
-        // Light (and anything else): long thin star rays.
-        _ => {
-            for i in 0..24 {
-                let a = tau * i as f64 / 24.0;
-                let r0 = (radius + 30) as f64;
-                let r1 = (radius + if i % 3 == 0 { 105 } else { 65 }) as f64;
-                fb.line(
-                    cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32,
-                    cx + (a.cos() * r1) as i32, cy + (a.sin() * r1) as i32,
-                    if i % 3 == 0 { 3 } else { 2 }, BLACK,
-                );
-            }
-        }
+    for f in 0..EFFECT_FRAMES {
+        effect_frame(fb, cx, cy, radius, element, f);
+        flush(client, 80);
     }
-    flush(client);
-
-    // Stage 3: element name stamped beneath the seal.
-    fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
-    flush(client);
+    effect_settle(fb, cx, cy, radius, element);
+    flush(client, 60);
 }
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
