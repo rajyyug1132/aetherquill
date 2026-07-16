@@ -202,21 +202,62 @@ fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     let diag = (max_x - min_x).hypot(max_y - min_y);
     let closed = end_dist < diag * 0.25;
 
-    // Triangle / rectangle: closed stroke that simplifies to 3-4 corners.
+    // Triangle / rectangle: closed stroke that cleans up to 3-4 corners.
     if closed {
+        // Resample first — pen points cluster where the hand slows (corners!),
+        // which skews RDP; a uniform 6px spacing evens the vote.
+        let mut resampled = vec![points[0]];
+        let mut acc = 0.0;
+        for w in points.windows(2) {
+            let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            acc += d;
+            if acc >= 6.0 {
+                resampled.push(w[1]);
+                acc = 0.0;
+            }
+        }
         // Close the loop before simplifying so the start/end seam isn't a corner.
-        // Epsilon 3% of diag: coarse enough to eat hand shake, fine enough that a
-        // circle keeps ~8 corners and never lands in the 3-5 polygon band. A shape
-        // started mid-edge gains one collinear phantom corner — harmless, the
-        // polygon still renders straight — hence the band reaching 5.
-        let mut looped = points.to_vec();
-        looped.push(p0);
-        let corners = rdp(&looped, diag * 0.03);
-        let n_corners = corners.len() - 1; // first == last after the loop close
+        resampled.push(p0);
+        let mut corners = rdp(&resampled, diag * 0.025);
+        // Merge corners that are practically the same point (jitter doubles),
+        // then drop near-collinear ones (mid-edge phantom corners).
+        corners.dedup_by(|b, a| (b.0 - a.0).hypot(b.1 - a.1) < diag * 0.08);
+        let mut i = 1;
+        while i + 1 < corners.len() {
+            let (a, b, c) = (corners[i - 1], corners[i], corners[i + 1]);
+            let (v1, v2) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+            let cross = v1.0 * v2.1 - v1.1 * v2.0;
+            let dot = v1.0 * v2.0 + v1.1 * v2.1;
+            // Turn angle under ~14 degrees = straight-enough edge, not a corner.
+            if cross.atan2(dot).abs() < 0.25 {
+                corners.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        // Seam handling: the stroke's start point is a locked RDP endpoint, so
+        // a shape begun mid-edge keeps it as a phantom corner — test the seam
+        // for collinearity and rotate it out.
+        if corners.len() >= 4 {
+            let (a, b, c) = (corners[corners.len() - 2], corners[0], corners[1]);
+            let (v1, v2) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+            if (v1.0 * v2.1 - v1.1 * v2.0).atan2(v1.0 * v2.0 + v1.1 * v2.1).abs() < 0.25 {
+                corners.remove(0);
+                *corners.last_mut().unwrap() = corners[0];
+            }
+        }
+        // Ensure loop closure after cleanup.
+        if corners.len() >= 2 {
+            let (first, last) = (corners[0], *corners.last().unwrap());
+            if (first.0 - last.0).hypot(first.1 - last.1) > 1.0 {
+                corners.push(first);
+            }
+        }
+        let n_corners = corners.len() - 1; // first == last (closed loop)
         if n_corners == 3 {
             return Some(polygon_points(&corners));
         }
-        if (4..=5).contains(&n_corners) {
+        if n_corners == 4 {
             // Near-axis-aligned quads become perfect bounding-box rectangles.
             let axis_aligned = corners.windows(2).all(|w| {
                 let ang = (w[1].1 - w[0].1).atan2(w[1].0 - w[0].0).abs();
@@ -263,18 +304,30 @@ fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     }).collect())
 }
 
-fn draw_chrome(fb: &mut Fb) {
+const ERASE_X: i32 = 12 + BTN_W + 12;
+
+fn draw_chrome(fb: &mut Fb, erase_mode: bool) {
     fb.fill_rect(0, 0, W, CHROME_H, WHITE);
     fb.rect_outline(12, 15, BTN_W, BTN_H, 3, BLACK);
     fb.text(48, 32, "UNDO", 4, BLACK);
+    // ERASE is a toggle: filled black while active. (AppLoad's qtfb bridge
+    // doesn't forward pen-tip vs eraser-back — devId is a TODO upstream —
+    // so the marker's built-in eraser can't be detected in windowed mode.)
+    if erase_mode {
+        fb.fill_rect(ERASE_X, 15, BTN_W, BTN_H, BLACK);
+        fb.text(ERASE_X + 10, 32, "ERASE", 4, WHITE);
+    } else {
+        fb.rect_outline(ERASE_X, 15, BTN_W, BTN_H, 3, BLACK);
+        fb.text(ERASE_X + 10, 32, "ERASE", 4, BLACK);
+    }
     fb.rect_outline(W - 12 - BTN_W, 15, BTN_W, BTN_H, 3, BLACK);
     fb.text(W - 12 - BTN_W + 28, 32, "CLEAR", 4, BLACK);
     fb.fill_rect(0, CHROME_H, W, 2, GRAY);
 }
 
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
-    let left = 12 + BTN_W + 24;
-    let width = W - 2 * left;
+    let left = ERASE_X + BTN_W + 24;
+    let width = W - 12 - BTN_W - 24 - left;
     fb.fill_rect(left, 6, width, CHROME_H - 12, WHITE);
     fb.text(left + 8, 18, line1, 3, BLACK);
     fb.text(left + 8, 60, line2, 2, GRAY);
@@ -283,9 +336,9 @@ fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
 
 /// Full redraw. When a complete ring is known, its member strokes render as
 /// one perfect circle (display-only snap — recognition still sees raw points).
-fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>) {
+fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>, erase_mode: bool) {
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_chrome(fb);
+    draw_chrome(fb, erase_mode);
     let ring_ids: &[String] = ring.filter(|r| r.complete).map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
         if ring_ids.contains(&stroke.id) {
@@ -355,17 +408,70 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
     fb.circle(cx, cy, radius + 24, 2, BLACK);
     flush(client);
 
-    // Stage 2: radial burst — 24 rays shooting outward.
-    for i in 0..24 {
-        let a = std::f64::consts::TAU * i as f64 / 24.0;
-        let (sin, cos) = (a.sin(), a.cos());
-        let r0 = (radius + 30) as f64;
-        let r1 = (radius + if i % 2 == 0 { 95 } else { 65 }) as f64;
-        fb.line(
-            cx + (cos * r0) as i32, cy + (sin * r0) as i32,
-            cx + (cos * r1) as i32, cy + (sin * r1) as i32,
-            if i % 2 == 0 { 4 } else { 2 }, BLACK,
-        );
+    // Stage 2: elemental burst.
+    let tau = std::f64::consts::TAU;
+    match element {
+        // Fire: jagged two-segment flame rays.
+        "fire" => {
+            for i in 0..16 {
+                let a = tau * i as f64 / 16.0;
+                let r0 = (radius + 30) as f64;
+                let r1 = (radius + 60) as f64;
+                let r2 = (radius + 100) as f64;
+                let (x0, y0) = (cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32);
+                let am = a + 0.09;
+                let (x1, y1) = (cx + (am.cos() * r1) as i32, cy + (am.sin() * r1) as i32);
+                let (x2, y2) = (cx + (a.cos() * r2) as i32, cy + (a.sin() * r2) as i32);
+                fb.line(x0, y0, x1, y1, 4, BLACK);
+                fb.line(x1, y1, x2, y2, 3, BLACK);
+            }
+        }
+        // Water: concentric ripple rings.
+        "water" => {
+            fb.circle(cx, cy, radius + 38, 3, BLACK);
+            fb.circle(cx, cy, radius + 62, 2, BLACK);
+            fb.circle(cx, cy, radius + 88, 1, BLACK);
+        }
+        // Wind: swept tangential arcs.
+        "wind" => {
+            for i in 0..12 {
+                let a = tau * i as f64 / 12.0;
+                let r = (radius + 55) as f64;
+                let (x0, y0) = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
+                let sweep = a + 0.55;
+                let (x1, y1) = (cx + (sweep.cos() * (r + 35.0)) as i32, cy + (sweep.sin() * (r + 35.0)) as i32);
+                fb.line(x0, y0, x1, y1, 3, BLACK);
+            }
+        }
+        // Earth: nested rotated squares.
+        "earth" => {
+            for (j, rot) in [0.0_f64, 0.26, 0.52].iter().enumerate() {
+                let r = (radius + 45 + j as i32 * 25) as f64;
+                let pts: Vec<(i32, i32)> = (0..4)
+                    .map(|k| {
+                        let a = rot + tau * k as f64 / 4.0;
+                        (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32)
+                    })
+                    .collect();
+                for k in 0..4 {
+                    let (p, q) = (pts[k], pts[(k + 1) % 4]);
+                    fb.line(p.0, p.1, q.0, q.1, 2, BLACK);
+                }
+            }
+        }
+        // Light (and anything else): long thin star rays.
+        _ => {
+            for i in 0..24 {
+                let a = tau * i as f64 / 24.0;
+                let r0 = (radius + 30) as f64;
+                let r1 = (radius + if i % 3 == 0 { 105 } else { 65 }) as f64;
+                fb.line(
+                    cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32,
+                    cx + (a.cos() * r1) as i32, cy + (a.sin() * r1) as i32,
+                    if i % 3 == 0 { 3 } else { 2 }, BLACK,
+                );
+            }
+        }
     }
     flush(client);
 
@@ -432,7 +538,7 @@ fn main() {
     let mut fb = Fb { px };
 
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_chrome(&mut fb);
+    draw_chrome(&mut fb, false);
     let _ = client.update_all();
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
@@ -458,6 +564,16 @@ fn main() {
     let mut last_pen_event = Instant::now();
     // Auto ring snap: redraw once per newly completed ring.
     let mut snapped_ring_ids: Vec<String> = Vec::new();
+    // ERASE toggle (chrome button) — pen deletes strokes instead of inking.
+    let mut erase_mode = false;
+    let mut erased_any = false;
+    // Touch-drag stroke moving: (stroke index, touch dev_id, last x, last y).
+    let mut moving: Option<(usize, i32, f64, f64)> = None;
+    let mut last_touch = Instant::now();
+    let mut move_redraw = Instant::now();
+    // Touch arrives as a stream of PRESS events per contact — debounce chrome
+    // buttons so one tap doesn't fire dozens of times.
+    let mut last_chrome_tap = Instant::now() - std::time::Duration::from_secs(1);
 
     loop {
         // Block until the socket is readable (input or disconnect).
@@ -476,6 +592,18 @@ fn main() {
                     let (x, y) = (event.x as f64, event.y as f64);
                     last_pen_event = Instant::now();
                     if y < CHROME_H as f64 {
+                        continue;
+                    }
+                    if erase_mode {
+                        // Pen is an eraser: delete any stroke it touches.
+                        let hit = strokes.iter().position(|s| {
+                            s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 20.0)
+                        });
+                        if let Some(idx) = hit {
+                            strokes.remove(idx);
+                            erased_any = true;
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                        }
                         continue;
                     }
                     if (x - hold_anchor.0).hypot(y - hold_anchor.1) > 6.0 {
@@ -505,6 +633,17 @@ fn main() {
                 }
                 qtfb::INPUT_PEN_RELEASE => {
                     eprintln!("pen release, {} pts", current.len());
+                    if erase_mode {
+                        if erased_any {
+                            erased_any = false;
+                            let outcome = recognize(&dictionary, &strokes, None);
+                            previous_ring = outcome.ring.clone();
+                            snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+                        }
+                        continue;
+                    }
                     if !pen_down {
                         continue;
                     }
@@ -518,20 +657,59 @@ fn main() {
                         let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
                         if ring_ids != snapped_ring_ids {
                             snapped_ring_ids = ring_ids;
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                         }
                         render_feedback(&mut fb, &client, &outcome, &mut last_activation);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
-                        redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                        redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                     }
                 }
                 qtfb::INPUT_TOUCH_PRESS => {
-                    if pen_down || event.y >= CHROME_H {
+                    if pen_down {
                         continue;
                     }
+                    // Below the chrome: touch-drag moves the stroke under the finger.
+                    if event.y >= CHROME_H {
+                        let (x, y) = (event.x as f64, event.y as f64);
+                        last_touch = Instant::now();
+                        match moving {
+                            Some((idx, id, lx, ly)) if id == event.dev_id => {
+                                let (dx, dy) = (x - lx, y - ly);
+                                for p in &mut strokes[idx].points {
+                                    p.0 += dx;
+                                    p.1 += dy;
+                                }
+                                moving = Some((idx, id, x, y));
+                                if move_redraw.elapsed().as_millis() > 150 {
+                                    move_redraw = Instant::now();
+                                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                }
+                            }
+                            None => {
+                                let grab = strokes.iter().position(|s| {
+                                    s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 40.0)
+                                });
+                                if let Some(idx) = grab {
+                                    moving = Some((idx, event.dev_id, x, y));
+                                }
+                            }
+                            _ => {} // another finger — ignore
+                        }
+                        continue;
+                    }
+                    // Chrome buttons (debounced — touch streams PRESS events).
+                    if last_chrome_tap.elapsed().as_millis() < 400 {
+                        continue;
+                    }
+                    last_chrome_tap = Instant::now();
                     if event.x <= 12 + BTN_W {
                         strokes.pop();
+                    } else if (ERASE_X..ERASE_X + BTN_W).contains(&event.x) {
+                        erase_mode = !erase_mode;
+                        draw_chrome(&mut fb, erase_mode);
+                        let _ = client.update_partial(0, 0, W, CHROME_H);
+                        continue;
                     } else if event.x >= W - 12 - BTN_W {
                         strokes.clear();
                     } else {
@@ -540,7 +718,7 @@ fn main() {
                     let outcome = recognize(&dictionary, &strokes, None);
                     previous_ring = outcome.ring.clone();
                     snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                     render_feedback(&mut fb, &client, &outcome, &mut last_activation);
                 }
                 _ => {}
@@ -556,13 +734,23 @@ fn main() {
             }
         }
 
+        // Finger lifted mid-drag: commit the move, re-recognize.
+        if moving.is_some() && last_touch.elapsed().as_millis() > 400 {
+            moving = None;
+            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
+            previous_ring = outcome.ring.clone();
+            snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+        }
+
         // Hold-to-snap: pen still on the panel (events keep arriving inside
         // the 6px anchor) for 600ms — snap the in-progress stroke.
         if pen_down && !hold_snapped && hold_since.elapsed().as_millis() > 600 {
             hold_snapped = true;
             if let Some(snapped) = snap_stroke(&current) {
                 current = snapped;
-                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 for w in current.windows(2) {
                     fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                 }
@@ -585,7 +773,7 @@ fn main() {
                 let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
                 if ring_ids != snapped_ring_ids {
                     snapped_ring_ids = ring_ids;
-                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref());
+                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 }
                 render_feedback(&mut fb, &client, &outcome, &mut last_activation);
             }
