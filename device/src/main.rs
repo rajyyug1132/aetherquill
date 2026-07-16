@@ -266,11 +266,17 @@ fn main() {
     let mut previous_ring: Option<Ring> = None;
     let mut last_activation = String::new();
     let mut dirty_since = Instant::now();
+    // Coalesced refresh: ink lands in shm per-segment, but e-ink update
+    // requests flush at most every 40ms — per-segment update_partial floods
+    // the qtfb socket, lags the panel, and drops input events.
+    let mut dirty_rect: Option<(i32, i32, i32, i32)> = None; // x0,y0,x1,y1
+    let mut last_flush = Instant::now();
 
     loop {
         // Block until the socket is readable (input or disconnect).
         let mut pfd = libc::pollfd { fd: client.raw_fd(), events: libc::POLLIN, revents: 0 };
-        unsafe { libc::poll(&mut pfd, 1, 100) };
+        // 20ms timeout keeps the coalesced-refresh flush timely mid-stroke.
+        unsafe { libc::poll(&mut pfd, 1, 20) };
 
         let events = match client.drain_events() {
             Ok(events) => events,
@@ -278,6 +284,8 @@ fn main() {
         };
 
         for event in events {
+            // ponytail: temp debug for first on-device bring-up; delete once pen works
+            eprintln!("evt type={:#x} x={} y={} d={}", event.input_type, event.x, event.y, event.d);
             match event.input_type {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
                     let (x, y) = (event.x as f64, event.y as f64);
@@ -294,9 +302,12 @@ fn main() {
                         continue;
                     }
                     fb.line(last.0 as i32, last.1 as i32, x as i32, y as i32, INK_W, BLACK);
-                    let (lx, ly) = (last.0.min(x) as i32 - INK_W, last.1.min(y) as i32 - INK_W);
-                    let (w, h) = ((x - last.0).abs() as i32 + INK_W * 2, (y - last.1).abs() as i32 + INK_W * 2);
-                    let _ = client.update_partial(lx, ly, w, h);
+                    let (x0, y0) = (last.0.min(x) as i32 - INK_W, last.1.min(y) as i32 - INK_W);
+                    let (x1, y1) = (last.0.max(x) as i32 + INK_W, last.1.max(y) as i32 + INK_W);
+                    dirty_rect = Some(match dirty_rect {
+                        Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+                        None => (x0, y0, x1, y1),
+                    });
                     current.push((x, y));
                     dirty_since = Instant::now();
                 }
@@ -334,6 +345,15 @@ fn main() {
                     render_feedback(&mut fb, &client, &outcome, &mut last_activation);
                 }
                 _ => {}
+            }
+        }
+
+        // Flush coalesced ink refreshes at ~25Hz.
+        if let Some((x0, y0, x1, y1)) = dirty_rect {
+            if last_flush.elapsed().as_millis() >= 40 || !pen_down {
+                let _ = client.update_partial(x0.max(0), y0.max(0), x1 - x0, y1 - y0);
+                dirty_rect = None;
+                last_flush = Instant::now();
             }
         }
 
