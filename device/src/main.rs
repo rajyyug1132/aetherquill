@@ -308,10 +308,13 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
     };
     for f in 0..EFFECT_FRAMES {
         effect_frame(fb, cx, cy, radius, element, f);
-        flush(client, 80);
+        // E-ink needs ~300ms to physically show a frame; faster and xochitl
+        // coalesces the updates into one (observed on device: only the settle
+        // frame was visible at 80ms pacing).
+        flush(client, 320);
     }
     effect_settle(fb, cx, cy, radius, element);
-    flush(client, 60);
+    flush(client, 200);
 }
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
