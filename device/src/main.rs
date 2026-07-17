@@ -47,7 +47,11 @@ static mut ERASE_UI: (usize, bool) = (1, false);
 
 struct ScreenStroke {
     id: String,
+    /// What's drawn on screen (may be straightened/snapped).
     points: Vec<(f64, f64)>,
+    /// The hand ink as captured — recognition sees THIS, never the snapped
+    /// version, so classification matches the upstream web app exactly.
+    raw: Vec<(f64, f64)>,
 }
 
 fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
@@ -55,7 +59,7 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .iter()
         .map(|s| RawStroke {
             id: s.id.clone(),
-            points: s.points.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect(),
+            points: s.raw.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect(),
         })
         .collect()
 }
@@ -216,7 +220,7 @@ fn scrub_erase(
         redo.push(original);
         for seg in segments {
             if seg.len() >= 2 && path_length(&seg) >= 10.0 {
-                strokes.insert(i, ScreenStroke { id: format!("s{next_id}"), points: seg });
+                strokes.insert(i, ScreenStroke { id: format!("s{next_id}"), points: seg.clone(), raw: seg });
                 *next_id += 1;
                 i += 1;
             }
@@ -337,7 +341,8 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
 
     fb.circle(cx, cy, radius + 6, 2, GRAY);
 
-    let activated = outcome.active && outcome.signature != *last_activation;
+    let sealed_now = outcome.ring.as_ref().is_some_and(|r| r.activation_event);
+    let activated = outcome.active && sealed_now && outcome.signature != *last_activation;
     if activated {
         *last_activation = outcome.signature.clone();
         if let Some(element) = &outcome.element {
@@ -383,6 +388,7 @@ fn main() {
     let mut strokes: Vec<ScreenStroke> = Vec::new();
     let mut redo: Vec<ScreenStroke> = Vec::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
+    let mut current_raw: Vec<(f64, f64)> = Vec::new();
     let mut pen_down = false;
     let mut next_id: u64 = 1;
     let mut previous_ring: Option<Ring> = None;
@@ -489,6 +495,7 @@ fn main() {
                         hold_snapped = false;
                         adjusting = None;
                         current = vec![(x, y)];
+                        current_raw = vec![(x, y)];
                         eprintln!("pen down at {x},{y}");
                         continue;
                     }
@@ -504,6 +511,7 @@ fn main() {
                         None => (x0, y0, x1, y1),
                     });
                     current.push((x, y));
+                    current_raw.push((x, y));
                     dirty_since = Instant::now();
                 }
                 qtfb::INPUT_PEN_RELEASE => {
@@ -543,11 +551,13 @@ fn main() {
                     let was_adjusting = adjusting.take().is_some();
                     let points = std::mem::take(&mut current);
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
+                        let raw = std::mem::take(&mut current_raw);
                         let (points, straightened) = match straighten(&points) {
                             Some(line) => (line, true),
                             None => (points, false),
                         };
-                        strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
+                        let raw = if raw.len() >= 2 { raw } else { points.clone() };
+                        strokes.push(ScreenStroke { id: format!("s{next_id}"), points, raw });
                         if straightened || was_adjusting {
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                         }
@@ -599,7 +609,8 @@ fn main() {
                         match moving {
                             Some((idx, id, lx, ly)) if id == event.dev_id => {
                                 let (dx, dy) = (x - lx, y - ly);
-                                for p in &mut strokes[idx].points {
+                                let st = &mut strokes[idx];
+                                for p in st.points.iter_mut().chain(st.raw.iter_mut()) {
                                     p.0 += dx;
                                     p.1 += dy;
                                 }
@@ -717,11 +728,13 @@ fn main() {
             let was_adjusting = adjusting.take().is_some();
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
+                let raw = std::mem::take(&mut current_raw);
                 let (points, straightened) = match straighten(&points) {
                     Some(line) => (line, true),
                     None => (points, false),
                 };
-                strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
+                let raw = if raw.len() >= 2 { raw } else { points.clone() };
+                strokes.push(ScreenStroke { id: format!("s{next_id}"), points, raw });
                 if straightened || was_adjusting {
                     redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 }
