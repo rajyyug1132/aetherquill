@@ -64,6 +64,67 @@ pub fn straighten(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     }).collect())
 }
 
+/// What a stroke snapped into — carries the geometry the live-adjust phase
+/// (pen held down, dragging to resize/rotate) needs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SnapKind {
+    Line,
+    Circle { cx: f64, cy: f64, dir: f64 },
+    Poly,
+}
+
+/// snap_stroke, plus which shape it chose.
+pub fn snap_stroke_kind(points: &[(f64, f64)]) -> Option<(Vec<(f64, f64)>, SnapKind)> {
+    let snapped = snap_stroke(points)?;
+    let (first, last) = (snapped[0], *snapped.last().unwrap());
+    let closed = (first.0 - last.0).hypot(first.1 - last.1) < 2.0;
+    if !closed {
+        return Some((snapped, SnapKind::Line));
+    }
+    // Closed: circle iff radii from centroid are uniform (polygons vary).
+    let n = snapped.len() as f64;
+    let (cx, cy) = snapped.iter().fold((0.0, 0.0), |(ax, ay), p| (ax + p.0, ay + p.1));
+    let (cx, cy) = (cx / n, cy / n);
+    let radii: Vec<f64> = snapped.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).collect();
+    let mean = radii.iter().sum::<f64>() / n;
+    let dev = (radii.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n).sqrt();
+    if dev / mean < 0.01 {
+        let signed_area: f64 = snapped.windows(2).map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1).sum();
+        let dir = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+        Some((snapped, SnapKind::Circle { cx, cy, dir }))
+    } else {
+        Some((snapped, SnapKind::Poly))
+    }
+}
+
+/// Regenerate a snapped shape for the live-adjust drag: the pen tip at
+/// (tx,ty) drives length/rotation (line), radius (circle), or uniform scale
+/// about the centroid (polygon, `base` = shape at snap time, `grab` = tip
+/// distance from centroid at snap time).
+pub fn adjust_shape(kind: SnapKind, anchor: (f64, f64), base: &[(f64, f64)], grab: f64, tx: f64, ty: f64) -> Vec<(f64, f64)> {
+    match kind {
+        SnapKind::Line => (0..16).map(|i| {
+            let t = i as f64 / 15.0;
+            (anchor.0 + (tx - anchor.0) * t, anchor.1 + (ty - anchor.1) * t)
+        }).collect(),
+        SnapKind::Circle { cx, cy, dir } => {
+            let radius = (tx - cx).hypot(ty - cy).max(10.0);
+            let start = (ty - cy).atan2(tx - cx);
+            (0..=64).map(|i| {
+                let a = start + dir * std::f64::consts::TAU * i as f64 / 64.0;
+                (cx + radius * a.cos(), cy + radius * a.sin())
+            }).collect()
+        }
+        SnapKind::Poly => {
+            let scale = ((tx - anchor.0).hypot(ty - anchor.1) / grab.max(1.0)).clamp(0.2, 5.0);
+            base.iter().map(|p| (
+                anchor.0 + (p.0 - anchor.0) * scale,
+                anchor.1 + (p.1 - anchor.1) * scale,
+            )).collect()
+        }
+    }
+}
+
 /// Snap a finished-looking stroke to a perfect line, triangle, rectangle, or
 /// circle (reMarkable "perfect shapes" style). Returns None when the stroke
 /// isn't close enough to any. Winding is preserved — spell direction

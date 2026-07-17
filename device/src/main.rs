@@ -27,7 +27,7 @@ mod render;
 mod shapes;
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
-use shapes::{path_length, snap_stroke, straighten};
+use shapes::{adjust_shape, path_length, snap_stroke_kind, straighten, SnapKind};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -330,6 +330,11 @@ fn main() {
     let mut moving: Option<(usize, i32, f64, f64)> = None;
     let mut last_touch = Instant::now();
     let mut move_redraw = Instant::now();
+    // Live shape adjust (official reMarkable UX): after hold-to-snap, keeping
+    // the pen down and dragging resizes/rotates the shape; lifting finalizes.
+    // (kind, anchor, base points at snap, grab distance at snap)
+    let mut adjusting: Option<(SnapKind, (f64, f64), Vec<(f64, f64)>, f64)> = None;
+    let mut adjust_redraw = Instant::now();
     // Touch arrives as a stream of PRESS events per contact — debounce chrome
     // buttons so one tap doesn't fire dozens of times.
     let mut last_chrome_tap = Instant::now() - std::time::Duration::from_secs(1);
@@ -369,9 +374,23 @@ fn main() {
                         hold_anchor = (x, y);
                         hold_since = Instant::now();
                     }
-                    if !pen_down {
+                    if pen_down {
+                        if let Some((kind, anchor, ref base, grab)) = adjusting {
+                            current = adjust_shape(kind, anchor, base, grab, x, y);
+                            if adjust_redraw.elapsed().as_millis() > 120 {
+                                adjust_redraw = Instant::now();
+                                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                for w in current.windows(2) {
+                                    fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
+                                }
+                                let _ = client.update_all();
+                            }
+                            continue;
+                        }
+                    } else {
                         pen_down = true;
                         hold_snapped = false;
+                        adjusting = None;
                         current = vec![(x, y)];
                         eprintln!("pen down at {x},{y}");
                         continue;
@@ -407,6 +426,7 @@ fn main() {
                         continue;
                     }
                     pen_down = false;
+                    let was_adjusting = adjusting.take().is_some();
                     let points = std::mem::take(&mut current);
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                         let (points, straightened) = match straighten(&points) {
@@ -414,7 +434,7 @@ fn main() {
                             None => (points, false),
                         };
                         strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
-                        if straightened {
+                        if straightened || was_adjusting {
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                         }
                         next_id += 1;
@@ -530,7 +550,7 @@ fn main() {
         // the 6px anchor) for 600ms — snap the in-progress stroke.
         if pen_down && !hold_snapped && hold_since.elapsed().as_millis() > 600 {
             hold_snapped = true;
-            if let Some(snapped) = snap_stroke(&current) {
+            if let Some((snapped, kind)) = snap_stroke_kind(&current) {
                 current = snapped;
                 redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 for w in current.windows(2) {
@@ -538,6 +558,18 @@ fn main() {
                 }
                 let _ = client.update_all();
                 dirty_rect = None;
+                // Enter live adjust: drag without lifting to resize/rotate.
+                let anchor = match kind {
+                    SnapKind::Line => current[0],
+                    SnapKind::Circle { cx, cy, .. } => (cx, cy),
+                    SnapKind::Poly => {
+                        let n = current.len() as f64;
+                        let (ax, ay) = current.iter().fold((0.0, 0.0), |(ax, ay), p| (ax + p.0, ay + p.1));
+                        (ax / n, ay / n)
+                    }
+                };
+                let grab = (hold_anchor.0 - anchor.0).hypot(hold_anchor.1 - anchor.1);
+                adjusting = Some((kind, anchor, current.clone(), grab));
             }
         }
 
@@ -546,6 +578,7 @@ fn main() {
         // held still keeps trickling events and belongs to hold-to-snap.
         if pen_down && last_pen_event.elapsed().as_millis() > 600 {
             pen_down = false;
+            let was_adjusting = adjusting.take().is_some();
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                 let (points, straightened) = match straighten(&points) {
@@ -553,7 +586,7 @@ fn main() {
                     None => (points, false),
                 };
                 strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
-                if straightened {
+                if straightened || was_adjusting {
                     redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 }
                 next_id += 1;
