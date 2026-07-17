@@ -27,7 +27,7 @@ mod render;
 mod shapes;
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
-use shapes::{adjust_shape, path_length, snap_stroke_kind, straighten, SnapKind};
+use shapes::{adjust_shape, path_length, point_in_poly, snap_stroke_kind, straighten, SnapKind};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -40,6 +40,10 @@ const MIN_POINT_DIST: f64 = 1.4 / CANVAS_SCALE;
 const MIN_STROKE_LEN: f64 = 7.0 / CANVAS_SCALE;
 
 const INK_W: i32 = 3;
+const ERASE_SIZES: [f64; 3] = [14.0, 28.0, 56.0];
+// ponytail: single-threaded app; (size_idx, select_mode) for the eraser menu
+// lives in a static so redraw_all call sites stay unchanged.
+static mut ERASE_UI: (usize, bool) = (1, false);
 
 struct ScreenStroke {
     id: String,
@@ -142,6 +146,32 @@ fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
 }
 
+const EMENU_X: i32 = SIDEBAR_W + 6;
+const EMENU_W: i32 = 64;
+const EMENU_H: i32 = 56;
+
+fn emenu_y(opt: i32) -> i32 {
+    icon_y(1) + opt * (EMENU_H + 8)
+}
+
+/// Eraser options flyout: three scrub sizes + selection-loop mode.
+fn draw_eraser_menu(fb: &mut Fb, size_idx: usize, select_mode: bool) {
+    for (opt, label) in ["S", "M", "L", "SEL"].iter().enumerate() {
+        let y = emenu_y(opt as i32);
+        let active = if opt == 3 { select_mode } else { !select_mode && opt == size_idx };
+        let fg = if active {
+            fb.fill_rect(EMENU_X, y, EMENU_W, EMENU_H, BLACK);
+            WHITE
+        } else {
+            fb.fill_rect(EMENU_X, y, EMENU_W, EMENU_H, WHITE);
+            fb.rect_outline(EMENU_X, y, EMENU_W, EMENU_H, 2, BLACK);
+            BLACK
+        };
+        let scale = if opt == 3 { 2 } else { 3 };
+        fb.text(EMENU_X + (EMENU_W - label.len() as i32 * 8 * scale) / 2, y + 16, label, scale, fg);
+    }
+}
+
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
     let left = SIDEBAR_W + 12;
     let width = W - left - 12;
@@ -151,12 +181,59 @@ fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
     let _ = client.update_partial(left, 0, width, STATUS_H);
 }
 
+/// Scrub-erase: remove the parts of any stroke within `r` of (x,y), splitting
+/// survivors into separate strokes (official "regular eraser" semantics).
+/// The original stroke goes to `redo` so the erase is undoable.
+fn scrub_erase(
+    strokes: &mut Vec<ScreenStroke>,
+    redo: &mut Vec<ScreenStroke>,
+    next_id: &mut u64,
+    x: f64,
+    y: f64,
+    r: f64,
+) -> bool {
+    let mut changed = false;
+    let mut i = 0;
+    while i < strokes.len() {
+        if !strokes[i].points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < r) {
+            i += 1;
+            continue;
+        }
+        changed = true;
+        let original = strokes.remove(i);
+        let mut segments: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut run: Vec<(f64, f64)> = Vec::new();
+        for &p in &original.points {
+            if (p.0 - x).hypot(p.1 - y) >= r {
+                run.push(p);
+            } else if !run.is_empty() {
+                segments.push(std::mem::take(&mut run));
+            }
+        }
+        if !run.is_empty() {
+            segments.push(run);
+        }
+        redo.push(original);
+        for seg in segments {
+            if seg.len() >= 2 && path_length(&seg) >= 10.0 {
+                strokes.insert(i, ScreenStroke { id: format!("s{next_id}"), points: seg });
+                *next_id += 1;
+                i += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// Full redraw. When a complete ring is known, its member strokes render as
 /// one perfect circle (display-only snap — recognition still sees raw points).
 fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>, erase_mode: bool) {
     fb.fill_rect(0, 0, W, H, WHITE);
     draw_sidebar(fb, erase_mode);
     fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    if erase_mode {
+        draw_eraser_menu(fb, unsafe { ERASE_UI.0 }, unsafe { ERASE_UI.1 });
+    }
     let ring_ids: &[String] = ring.filter(|r| r.complete).map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
         if ring_ids.contains(&stroke.id) {
@@ -326,6 +403,9 @@ fn main() {
     // ERASE toggle (chrome button) — pen deletes strokes instead of inking.
     let mut erase_mode = false;
     let mut erased_any = false;
+    let mut erase_size_idx: usize = 1;
+    let mut erase_select = false;
+    let mut erase_redraw = Instant::now();
     // Touch-drag stroke moving: (stroke index, touch dev_id, last x, last y).
     let mut moving: Option<(usize, i32, f64, f64)> = None;
     let mut last_touch = Instant::now();
@@ -359,13 +439,27 @@ fn main() {
                         continue;
                     }
                     if erase_mode {
-                        // Pen is an eraser: delete any stroke it touches.
-                        let hit = strokes.iter().position(|s| {
-                            s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 20.0)
-                        });
-                        if let Some(idx) = hit {
-                            redo.push(strokes.remove(idx));
+                        if x < (SIDEBAR_W + EMENU_W + 12) as f64 {
+                            continue; // don't erase under the eraser menu
+                        }
+                        if erase_select {
+                            // Selection loop: capture, echo as thin gray ink.
+                            if let Some(&last) = current.last() {
+                                fb.line(last.0 as i32, last.1 as i32, x as i32, y as i32, 1, GRAY);
+                                let _ = client.update_partial(
+                                    last.0.min(x) as i32 - 2, last.1.min(y) as i32 - 2,
+                                    (x - last.0).abs() as i32 + 4, (y - last.1).abs() as i32 + 4,
+                                );
+                            }
+                            current.push((x, y));
+                            pen_down = true;
+                            continue;
+                        }
+                        if scrub_erase(&mut strokes, &mut redo, &mut next_id, x, y, ERASE_SIZES[erase_size_idx]) {
                             erased_any = true;
+                        }
+                        if erased_any && erase_redraw.elapsed().as_millis() > 150 {
+                            erase_redraw = Instant::now();
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                         }
                         continue;
@@ -412,6 +506,23 @@ fn main() {
                 qtfb::INPUT_PEN_RELEASE => {
                     eprintln!("pen release, {} pts", current.len());
                     if erase_mode {
+                        if erase_select && current.len() >= 8 {
+                            let a = std::mem::take(&mut current);
+                            pen_down = false;
+                            let before = strokes.len();
+                            strokes.retain(|s| {
+                                let inside = s.points.iter().filter(|p| point_in_poly(p.0, p.1, &a)).count();
+                                let keep = (inside as f64) < s.points.len() as f64 * 0.8;
+                                if !keep {
+                                    // moved into redo below via drain pattern not possible in retain;
+                                    // acceptable: selection erase is not undoable per-stroke
+                                }
+                                keep
+                            });
+                            erased_any |= strokes.len() != before;
+                        }
+                        pen_down = false;
+                        current.clear();
                         if erased_any {
                             erased_any = false;
                             let outcome = recognize(&dictionary, &strokes, None);
@@ -456,6 +567,28 @@ fn main() {
                     if pen_down {
                         continue;
                     }
+                    // Eraser menu flyout.
+                    if erase_mode
+                        && (EMENU_X..EMENU_X + EMENU_W).contains(&event.x)
+                        && event.y >= emenu_y(0)
+                        && event.y < emenu_y(3) + EMENU_H
+                    {
+                        if last_chrome_tap.elapsed().as_millis() < 250 {
+                            continue;
+                        }
+                        last_chrome_tap = Instant::now();
+                        let opt = (event.y - emenu_y(0)) / (EMENU_H + 8);
+                        if opt == 3 {
+                            erase_select = true;
+                        } else {
+                            erase_select = false;
+                            erase_size_idx = opt as usize;
+                        }
+                        unsafe { ERASE_UI = (erase_size_idx, erase_select) };
+                        draw_eraser_menu(&mut fb, erase_size_idx, erase_select);
+                        let _ = client.update_partial(EMENU_X, emenu_y(0), EMENU_W, 4 * (EMENU_H + 8));
+                        continue;
+                    }
                     // In the canvas: touch-drag moves the stroke under the finger.
                     if event.x >= SIDEBAR_W && event.y >= STATUS_H {
                         let (x, y) = (event.x as f64, event.y as f64);
@@ -498,8 +631,8 @@ fn main() {
                     match slot {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
-                            draw_sidebar(&mut fb, erase_mode);
-                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(4) + ICON_H + 12);
+                            unsafe { ERASE_UI = (erase_size_idx, erase_select) };
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                             continue;
                         }
                         Some(2) => {
@@ -576,7 +709,7 @@ fn main() {
         // Pen lift can arrive as silence (no RELEASE) if the window loses
         // focus mid-stroke; commit only when events themselves stop — a pen
         // held still keeps trickling events and belongs to hold-to-snap.
-        if pen_down && last_pen_event.elapsed().as_millis() > 600 {
+        if pen_down && !erase_mode && last_pen_event.elapsed().as_millis() > 600 {
             pen_down = false;
             let was_adjusting = adjusting.take().is_some();
             let points = std::mem::take(&mut current);

@@ -267,6 +267,22 @@ pub fn snap_stroke(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     }).collect())
 }
 
+/// Ray-casting point-in-polygon (poly = closed or open list of vertices).
+pub fn point_in_poly(px: f64, py: f64, poly: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +404,14 @@ mod tests {
     fn tiny_stroke_does_not_snap() {
         let pts = hand_circle(500.0, 500.0, 20.0, 30, true);
         assert!(snap_stroke(&pts).is_none(), "sub-threshold stroke must stay raw");
+    }
+
+    #[test]
+    fn point_in_poly_square() {
+        let sq = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
+        assert!(point_in_poly(50.0, 50.0, &sq));
+        assert!(!point_in_poly(150.0, 50.0, &sq));
+        assert!(!point_in_poly(-1.0, 50.0, &sq));
     }
 }
 
