@@ -44,6 +44,26 @@ pub fn polygon_points(corners: &[(f64, f64)]) -> Vec<(f64, f64)> {
     out
 }
 
+/// Auto-straighten: strict line test for every pen-up (no hold gesture).
+/// Only fires on strokes that are already clearly a line — endpoints stay
+/// exactly where the user drew them, so direction/placement is untouched.
+/// Deliberately shorter min-length than snap_stroke so sign strokes qualify.
+pub fn straighten(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
+    let len = path_length(points);
+    if points.len() < 6 || len < 60.0 {
+        return None;
+    }
+    let (p0, pn) = (points[0], points[points.len() - 1]);
+    let end_dist = (pn.0 - p0.0).hypot(pn.1 - p0.1);
+    if end_dist / len <= 0.97 {
+        return None; // not confidently a line — leave the ink alone
+    }
+    Some((0..16).map(|i| {
+        let t = i as f64 / 15.0;
+        (p0.0 + (pn.0 - p0.0) * t, p0.1 + (pn.1 - p0.1) * t)
+    }).collect())
+}
+
 /// Snap a finished-looking stroke to a perfect line, triangle, rectangle, or
 /// circle (reMarkable "perfect shapes" style). Returns None when the stroke
 /// isn't close enough to any. Winding is preserved — spell direction

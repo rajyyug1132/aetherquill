@@ -27,7 +27,7 @@ mod render;
 mod shapes;
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
-use shapes::{path_length, snap_stroke};
+use shapes::{path_length, snap_stroke, straighten};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -194,8 +194,17 @@ fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: O
     let t0 = Instant::now();
     let raw = to_raw_strokes(strokes);
     let result = classify_drawing(&raw, previous_ring, dictionary, "0.2.0", &INPUT, &RING, &LAYERS, &RECOGNITION);
-    eprintln!("recognize: {} strokes in {}ms", strokes.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
+    eprintln!(
+        "recognize: {} strokes in {}ms -> status={:?} element={:?} valid={} active={} ring_complete={}",
+        strokes.len(),
+        t0.elapsed().as_millis(),
+        spell.status,
+        spell.element,
+        spell.valid,
+        spell.active,
+        result.ring.complete,
+    );
     SpellOutcome {
         ring: if result.ring.found { Some(result.ring) } else { None },
         status: spell.status,
@@ -400,7 +409,14 @@ fn main() {
                     pen_down = false;
                     let points = std::mem::take(&mut current);
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
+                        let (points, straightened) = match straighten(&points) {
+                            Some(line) => (line, true),
+                            None => (points, false),
+                        };
                         strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
+                        if straightened {
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                        }
                         next_id += 1;
                         redo.clear();
                         let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
@@ -532,7 +548,14 @@ fn main() {
             pen_down = false;
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
+                let (points, straightened) = match straighten(&points) {
+                    Some(line) => (line, true),
+                    None => (points, false),
+                };
                 strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
+                if straightened {
+                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                }
                 next_id += 1;
                 redo.clear();
                 let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
