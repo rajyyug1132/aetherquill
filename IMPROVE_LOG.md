@@ -12,3 +12,5 @@ P5 fresh judge >= 9/10 twice · P6 INSTALL-CHECKLIST.md complete, no hardware cl
 | 3 | 82% | C1 sigil → dictionary fire template (owner-approved); INSTALL-CHECKLIST rewritten for 0.3.4 (pen, catalogue, focus, uninstall-deletes-log) | ✅ 85 · 29 · 3 | ✅ 1,061,844 B | ✅ 4/4 | ✅ 400/400 | pending | ✅ (to be judged) | ✅ kept |
 | 3 judges | 82% | P5 round 1 (sonnet, medium) | | | | | A 9/10 · B 8/10 ❌ (eval #[ignore]d, one-shot not stroke-by-stroke, tuned on the held-out seeds) | | |
 | 4 | 82% | eval hardening: 2 fresh never-tuned seeds × 10 redraws replayed stroke-by-stroke like the device (80/80) + 1 jittered redraw/spell in the default suite | ✅ 85 · 30 · 3 | ✅ 1,061,836 B | ✅ 4/4 | ✅ 400/400 + fresh 80/80 | pending round 2 | ✅ | ✅ kept |
+| 4 judges | 83% | P5 round 2 | | | | | A 9/10 · B 8/10 ❌ (both: lift by 400 ms timer; B: pick-replaces-page undisclosed) | | |
+| 5 | 83% | real finger-up via INPUT_TOUCH_RELEASE (timer kept as fallback); bin reuses lib modules (0 warnings); checklist discloses pick-replaces-page + timing blank | ✅ 85 · 30 · 3 | ✅ 1,063,828 B | ✅ 4/4 | ✅ 400/400 + fresh 80/80 | pending round 3 | ✅ | ✅ kept |

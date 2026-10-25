@@ -21,14 +21,10 @@ use recognizer::ring_detector::Ring;
 use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
 
-mod catalogue;
 mod grimoire;
-mod pen;
 mod qtfb;
-mod render;
-mod resume;
-mod shapes;
-mod spell_view;
+
+use device::{catalogue, pen, render, resume, shapes, spell_view};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
@@ -567,6 +563,15 @@ fn main() {
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
                         redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                    }
+                }
+                // Real finger-up (rm-appload 0.5.3 sends it per lifted point):
+                // ends the tap-drag guard and commits a stroke drag now. The
+                // 400ms silence checks below remain as the fallback.
+                qtfb::INPUT_TOUCH_RELEASE => {
+                    touch_until_lift_ignored = false;
+                    if moving.is_some() {
+                        last_touch = Instant::now() - std::time::Duration::from_millis(500);
                     }
                 }
                 qtfb::INPUT_TOUCH_PRESS => {

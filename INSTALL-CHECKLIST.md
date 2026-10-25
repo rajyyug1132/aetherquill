@@ -71,15 +71,15 @@ host tests found reliable. Close the ring last.
 | # | Do | Expect | ✓/✗ | Notes |
 |---|---|---|---|---|
 | 5.1 | tap the catalogue icon (bottom of the sidebar) with a finger | a "Spell Catalogue" panel with 4 rows: Fire Shoot, Water Orb, Converging Wind, Light Beam, each with one line of text | | |
-| 5.2 | tap **Fire Shoot** | page clears; strokes ink in one by one; ring snaps; status `Active spell - fire`; line 2 starts `column`; animation plays once, at the end | | |
+| 5.2 | tap **Fire Shoot** | page clears; strokes ink in one by one; ring snaps; status `Active spell - fire`; line 2 starts `column`; animation plays once, at the end. A pick **replaces** the page: what you had drawn can't be brought back with ↶/↷ | | |
 | 5.3 | tap the icon, then **Water Orb** | same, with `water` and `levitation` | | |
-| 5.4 | tap the icon, then **Converging Wind** (49 strokes, the slowest) | same, with `wind` and `convergence`. Note how long the inking takes: | | |
+| 5.4 | tap the icon, then **Converging Wind** (49 strokes, the slowest) | same, with `wind` and `convergence`. Write down how long the inking takes (not measured on hardware yet; the pen is unresponsive while it inks) | | |
 | 5.5 | tap the icon, then **Light Beam** | same, with `light` and `column` | | |
 | 5.6 | pick the same spell twice in a row | the animation plays again the second time | | |
 | 5.7 | tap ↶ a few times after a catalogue spell | its strokes come off one per tap. ✕ clears it in one go | | |
 | 5.8 | open the panel, then tap ↶, ↷ or ✕ | the panel closes; the next canvas tap does not ink a spell | | |
 | 5.9 | open the panel, then tap the canvas outside the rows | the panel closes and nothing is inked | | |
-| 5.10 | right after picking a spell, keep the finger down and drag a little | the freshly inked strokes don't move | | |
+| 5.10 | right after picking a spell, keep the finger down and drag a little | the freshly inked strokes don't move. After lifting, a one-finger drag on a stroke moves it again | | |
 
 ## 6. Suspend / resume
 
