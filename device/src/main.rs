@@ -326,6 +326,10 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
     }
     effect_settle(fb, cx, cy, radius, element, params);
     flush(client, 60);
+    // The fast waveform leaves every frame's ghost behind (seen on the RM2
+    // after a Fire Shoot: flame tongues and pillar outlines on a clean
+    // buffer); one full-quality refresh wipes them.
+    let _ = client.request_full_refresh();
 }
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
@@ -670,6 +674,7 @@ fn main() {
                         snapped_ring_ids.clear();
                         last_activation.clear();
                         redraw_all(&mut fb, &client, &strokes, None, erase_mode);
+                        let _ = client.request_full_refresh();
                         eprintln!("catalogue: inking {}", spell_catalogue[i].id);
                         for points in spell_catalogue[i].screen_strokes() {
                             for w in points.windows(2) {
@@ -761,6 +766,10 @@ fn main() {
                         _ => continue,
                     }
                     repaint_and_recognize!(None);
+                    if slot == Some(4) {
+                        // CLEAR must leave a clean panel, not fast-waveform ghosts.
+                        let _ = client.request_full_refresh();
+                    }
                 }
                 _ => {}
             }

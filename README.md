@@ -67,10 +67,10 @@ and the [Vellum](https://github.com/vellum-dev/vellum) package manager stack.
 
    ```sh
    rustup target add armv7-unknown-linux-musleabihf
-   bash scripts/make-bundle.sh 0.3.5        # -> dist/aetherquill-0.3.5.tar.gz
+   bash scripts/make-bundle.sh 0.3.6        # -> dist/aetherquill-0.3.6.tar.gz
 
-   scp dist/aetherquill-0.3.5.tar.gz root@10.11.99.1:/home/root/
-   ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.5.tar.gz && sh aetherquill-0.3.5/install.sh"
+   scp dist/aetherquill-0.3.6.tar.gz root@10.11.99.1:/home/root/
+   ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.6.tar.gz && sh aetherquill-0.3.6/install.sh"
    ```
 
    `install.sh` writes only `/home/root/xovi/exthome/appload/aetherquill`

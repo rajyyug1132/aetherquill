@@ -22,6 +22,43 @@ pub struct Fb<'a> {
 }
 
 impl Fb<'_> {
+    /// Solid disk.
+    pub fn fill_circle(&mut self, cx: i32, cy: i32, r: i32, c: u16) {
+        for dy in -r..=r {
+            let dx = ((r * r - dy * dy) as f64).sqrt() as i32;
+            for x in cx - dx..=cx + dx {
+                self.set(x, cy + dy, c);
+            }
+        }
+    }
+
+    /// Solid polygon (even-odd scanline fill).
+    pub fn fill_polygon(&mut self, pts: &[(i32, i32)], c: u16) {
+        if pts.len() < 3 {
+            return;
+        }
+        let y0 = pts.iter().map(|p| p.1).min().unwrap().max(0);
+        let y1 = pts.iter().map(|p| p.1).max().unwrap().min(H - 1);
+        let mut xs: Vec<f64> = Vec::new();
+        for y in y0..=y1 {
+            xs.clear();
+            let yc = y as f64 + 0.5;
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                let (ya, yb) = (a.1 as f64, b.1 as f64);
+                if (ya <= yc && yb > yc) || (yb <= yc && ya > yc) {
+                    xs.push(a.0 as f64 + (yc - ya) / (yb - ya) * (b.0 - a.0) as f64);
+                }
+            }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for pair in xs.chunks_exact(2) {
+                for x in (pair[0].round() as i32).max(0)..(pair[1].round() as i32).min(W) {
+                    self.set(x, y, c);
+                }
+            }
+        }
+    }
+
     pub fn set(&mut self, x: i32, y: i32, c: u16) {
         if (0..W).contains(&x) && (0..H).contains(&y) {
             self.px[(y * W + x) as usize] = c;
@@ -129,112 +166,119 @@ pub fn noise(seed: u32) -> f64 {
 }
 
 /// Draw one animation frame `f` (0..EFFECT_FRAMES) of the element's activation
-/// effect into the annulus around a seal at (cx,cy) radius `radius`. Translated
-/// from the upstream renderer's particle systems into 1-bit e-ink line art:
-/// fire=rising flicker, water=ripples+droplets, wind=curling swirl,
-/// earth=rising debris, light=radiant beams.
+/// effect into the annulus around a seal at (cx,cy) radius `radius`.
+///
+/// Drawn for 1-bit fast-waveform e-ink: solid filled shapes and thick lines
+/// (thin 1-2 px lines barely register in the fast mode and leave ghosts),
+/// frame 0 an ignition band, motion from shapes growing and travelling.
+/// Element character follows the upstream particle renderer: fire = rising
+/// top-weighted flame tongues + embers, water = expanding rings + falling
+/// droplets, wind = unfurling spiral ribbons + gusts, earth = cracks + rising
+/// boulders, light = pulsing sunburst + sparkles. Everything stays inside the
+/// seal's annulus (radius .. radius + reach) so each frame fully clears it.
 pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f: i32, params: &EffectParams) {
     let tau = std::f64::consts::TAU;
-    let reach = params.reach;
+    let reach = params.reach as f64;
     let w = params.weight;
-    // Motions were tuned on a 6-frame timeline (t = 0..5); more frames add
-    // in-between positions over the same path rather than a longer path.
-    let t = f as f64 * 5.0 / (EFFECT_FRAMES - 1) as f64;
-    let pad = radius + reach;
-    fb.clear_seal_annulus(cx, cy, radius, pad);
+    let p = f as f64 / (EFFECT_FRAMES - 1) as f64; // progress 0..1
+    fb.clear_seal_annulus(cx, cy, radius, radius + params.reach);
+    let r0 = (radius + 14) as f64;
+    let at = |a: f64, r: f64| (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
+
+    if f == 0 {
+        // Ignition: a solid band hugging the seal.
+        fb.circle(cx, cy, radius + 10, 22, BLACK);
+        return;
+    }
 
     match element {
-        // Fire: tongues rise and flicker above the seal (upstream: particles
-        // lift from the ring plane, flicker ∝ 1-stability). Weighted to the top.
         "fire" => {
-            let grow = 40.0 + t * 12.0;
-            for i in 0..18 {
-                let a = tau * i as f64 / 18.0;
-                let up = (-a.sin()).max(0.0); // upper hemisphere reaches higher
-                let h = grow * (0.55 + up * 0.85);
-                let flick = (noise(i as u32 + f as u32 * 18) - 0.5) * 0.28;
-                let r0 = (radius + 26) as f64;
-                let (x0, y0) = (cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32);
-                let am = a + flick;
-                let (xm, ym) = (cx + (am.cos() * (r0 + h * 0.5)) as i32, cy + (am.sin() * (r0 + h * 0.5)) as i32);
-                let (xt, yt) = (cx + (a.cos() * (r0 + h)) as i32, cy + (a.sin() * (r0 + h)) as i32);
-                fb.line(x0, y0, xm, ym, 4 + w, BLACK);
-                fb.line(xm, ym, xt, yt, 2 + w, BLACK);
+            for i in 0..16u32 {
+                let a = tau * i as f64 / 16.0 + 0.1;
+                let up = (-a.sin()).max(0.0);
+                let flick = noise(i * 7 + f as u32 * 31);
+                let h = (reach * (0.3 + 0.55 * up) * (0.45 + 0.55 * p) * (0.8 + 0.4 * flick)).min(reach - 22.0);
+                let half = 0.10 + 0.03 * flick;
+                let sway = (noise(i * 13 + f as u32 * 17) - 0.5) * 0.22;
+                let tongue = [at(a - half, r0), at(a - half * 0.75 + sway * 0.5, r0 + h * 0.45), at(a + sway, r0 + h), at(a + half * 0.75 + sway * 0.5, r0 + h * 0.45), at(a + half, r0)];
+                fb.fill_polygon(&tongue, BLACK);
+                if h > 36.0 {
+                    // Hollow core so tongues read as flames, not blobs.
+                    fb.fill_polygon(&[at(a - half * 0.35, r0 + 6.0), at(a + sway * 0.6, r0 + h * 0.55), at(a + half * 0.35, r0 + 6.0)], WHITE);
+                }
+            }
+            for e in 0..10u32 {
+                let a = -std::f64::consts::FRAC_PI_2 + (noise(e * 3) - 0.5) * 1.6;
+                let (x, y) = at(a, r0 + reach * (0.35 + 0.45 * ((p + noise(e * 5)) % 1.0)));
+                fb.fill_circle(x, y, 3 + (noise(e * 11) * 4.0) as i32 + w, BLACK);
             }
         }
-        // Water: concentric ripples expand outward, droplets arc and fall
-        // (upstream: faucet-arc projectiles under gravity + suspended orb).
         "water" => {
             for k in 0..3 {
-                let rr = radius + 20 + ((t * 16.0) as i32 + k * 30) % reach;
-                fb.circle(cx, cy, rr, 2 + w, BLACK);
+                let u = (p * 1.3 + k as f64 / 3.0) % 1.0;
+                fb.circle(cx, cy, (r0 + u * reach * 0.85) as i32, (9.0 * (1.0 - u)) as i32 + 2 + w, BLACK);
             }
-            for i in 0..6 {
-                let a = tau * i as f64 / 6.0;
-                let fall = (t * 14.0 + noise(i) * 20.0) % reach as f64;
-                let dx = cx + (a.cos() * (radius + 30) as f64) as i32;
-                let dy = cy + (a.sin() * (radius + 30) as f64) as i32 + fall as i32;
-                fb.circle(dx, dy, 4, 2 + w, BLACK);
+            for i in 0..10u32 {
+                let a = tau * i as f64 / 10.0 + 0.3;
+                let (x, y) = at(a, r0 + reach * (0.12 + 0.45 * p));
+                let y = y + (reach * 0.28 * p * p) as i32; // droplets fall as they fly
+                fb.fill_circle(x, y, 6 + w, BLACK);
+                fb.fill_polygon(&[(x - 4, y - 3), (x, y - 14), (x + 4, y - 3)], BLACK);
             }
         }
-        // Wind: curling streaks orbit and rotate (upstream: velocity curl spins
-        // each particle's short stroke). Spiral arms sweep around per frame.
         "wind" => {
-            for arm in 0..3 {
-                let base = tau * arm as f64 / 3.0 + t * 0.4;
-                let mut prev = (
-                    cx + (base.cos() * (radius + 20) as f64) as i32,
-                    cy + (base.sin() * (radius + 20) as f64) as i32,
-                );
-                for s in 1..14 {
-                    let t = s as f64 / 13.0;
-                    let a = base + t * 1.5; // curl
-                    let r = (radius + 20) as f64 + t * reach as f64 * 0.8;
-                    let p = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
-                    fb.line(prev.0, prev.1, p.0, p.1, 3 + w, BLACK);
-                    prev = p;
+            for arm in 0..4 {
+                let base = tau * arm as f64 / 4.0 + p * 2.2;
+                let mut prev = at(base, r0);
+                for st in 1..=16 {
+                    let u = st as f64 / 16.0;
+                    if u > 0.35 + 0.65 * p {
+                        break; // ribbons unfurl
+                    }
+                    let pt = at(base + u * 1.9, r0 + u * reach * 0.85);
+                    fb.line(prev.0, prev.1, pt.0, pt.1, ((1.0 - u) * 9.0) as i32 + 3 + w, BLACK);
+                    prev = pt;
                 }
             }
+            for g in 0..6u32 {
+                let a = tau * g as f64 / 6.0 - p * 1.5;
+                fb.arc(cx, cy, (r0 + reach * (0.3 + 0.4 * noise(g * 9))) as i32, a, a + 0.35, 5 + w, BLACK);
+            }
         }
-        // Earth: square debris chunks rise from the seal then settle (upstream:
-        // rect particles). Blocks climb over frames, nested squares brace it.
         "earth" => {
-            for (j, rot) in [0.0_f64, 0.4].iter().enumerate() {
-                let r = (radius + 34 + j as i32 * 26) as f64;
-                let pts: Vec<(i32, i32)> = (0..4)
-                    .map(|k| {
-                        let a = rot + tau * k as f64 / 4.0;
-                        (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32)
-                    })
-                    .collect();
-                for k in 0..4 {
-                    let (p, q) = (pts[k], pts[(k + 1) % 4]);
-                    fb.line(p.0, p.1, q.0, q.1, 2 + w, BLACK);
+            for c in 0..8u32 {
+                let a = tau * c as f64 / 8.0 + 0.2;
+                let len = reach * 0.75 * (0.3 + 0.7 * p);
+                let mut prev = at(a, r0);
+                for st in 1..=5u32 {
+                    let pt = at(a + (noise(c * 17 + st) - 0.5) * 0.12, r0 + st as f64 / 5.0 * len);
+                    fb.line(prev.0, prev.1, pt.0, pt.1, 8 - st as i32 + w, BLACK);
+                    prev = pt;
                 }
             }
-            for i in 0..8 {
-                let a = tau * i as f64 / 8.0;
-                let rise = (t * 12.0 + noise(i) * 30.0) % (reach as f64 * 0.9);
-                let r = (radius + 30) as f64 + rise;
-                let (bx, by) = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
-                let sz = 10 - (rise / reach as f64 * 6.0) as i32; // shrink as they climb
-                fb.rect_outline(bx - sz / 2, by - sz / 2, sz.max(4), sz.max(4), 2, BLACK);
+            for i in 0..12u32 {
+                let a = tau * i as f64 / 12.0;
+                let rise = reach * 0.75 * ((p * 0.9 + noise(i * 7) * 0.4) % 1.0);
+                let (bx, by) = at(a, r0 + 10.0 + rise);
+                let size = (24.0 - rise / reach * 10.0) * 0.7;
+                let rot = noise(i * 3) * tau + p * 2.0;
+                let corners: Vec<(i32, i32)> = (0..4).map(|k| { let q = rot + tau * k as f64 / 4.0; (bx + (q.cos() * size) as i32, by + (q.sin() * size) as i32) }).collect();
+                fb.fill_polygon(&corners, BLACK);
             }
         }
-        // Light (and anything else): radiant beams pulse outward, thin and long
-        // (upstream: bright projectile trails). Beams extend then contract.
         _ => {
-            let pulse = ((t / 5.0 * std::f64::consts::PI).sin() * reach as f64 * 0.9) as i32;
-            for i in 0..24 {
-                let a = tau * i as f64 / 24.0;
-                let r0 = (radius + 22) as f64;
-                let r1 = (radius + 22 + pulse.max(20) + if i % 2 == 0 { 24 } else { 0 }) as f64;
-                fb.line(
-                    cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32,
-                    cx + (a.cos() * r1) as i32, cy + (a.sin() * r1) as i32,
-                    (if i % 2 == 0 { 3 } else { 1 }) + w,
-                    BLACK,
-                );
+            let pulse = (p * std::f64::consts::PI).sin();
+            for i in 0..20 {
+                let a = tau * i as f64 / 20.0;
+                let long = i % 2 == 0;
+                let len = reach * if long { 0.85 } else { 0.5 } * (0.35 + 0.65 * pulse);
+                let half = if long { 0.045 } else { 0.03 };
+                fb.fill_polygon(&[at(a - half, r0), at(a, r0 + len), at(a + half, r0)], BLACK);
+            }
+            for s in 0..8 {
+                let (x, y) = at(tau * (s as f64 + 0.5) / 8.0 + p, r0 + reach * 0.6 * pulse.max(0.3));
+                let d = 8 + w;
+                fb.fill_polygon(&[(x, y - d), (x + d / 2, y), (x, y + d), (x - d / 2, y)], BLACK);
             }
         }
     }
@@ -259,13 +303,13 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
                 let (ox, oy) = (nx * half * side, ny * half * side);
                 let start = (cx as f64 + dx * r0 + ox, cy as f64 + dy * r0 + oy);
                 let end = (start.0 + dx * len, start.1 + dy * len);
-                fb.line(start.0 as i32, start.1 as i32, end.0 as i32, end.1 as i32, 3 + w, BLACK);
+                fb.line(start.0 as i32, start.1 as i32, end.0 as i32, end.1 as i32, 7 + w, BLACK);
             }
             let rungs = (len / 28.0) as i32;
             for k in 1..=rungs {
                 let t = r0 + k as f64 * 28.0;
                 let (mx, my) = (cx as f64 + dx * t, cy as f64 + dy * t);
-                fb.line((mx - nx * half) as i32, (my - ny * half) as i32, (mx + nx * half) as i32, (my + ny * half) as i32, 1 + w, BLACK);
+                fb.line((mx - nx * half) as i32, (my - ny * half) as i32, (mx + nx * half) as i32, (my + ny * half) as i32, 4 + w, BLACK);
             }
         }
         // Chevrons stacked above the seal; the stack climbs further the weaker
@@ -280,8 +324,8 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
                 }
                 let half = 16.0 + 24.0 * params.spread - k as f64 * 3.0;
                 let (x, y) = (cx, y as i32);
-                fb.line(x - half as i32, y + 12, x, y, 2 + w, BLACK);
-                fb.line(x, y, x + half as i32, y + 12, 2 + w, BLACK);
+                fb.line(x - half as i32, y + 12, x, y, 5 + w, BLACK);
+                fb.line(x, y, x + half as i32, y + 12, 5 + w, BLACK);
             }
         }
         // Spokes from the outer edge, each aimed at the convergence point and
@@ -306,7 +350,7 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
                 let end = (outer.0 + vx / dist * travel, outer.1 + vy / dist * travel);
                 let end_r = (end.0 - cx as f64).hypot(end.1 - cy as f64);
                 let end = if end_r < r0 { (cx as f64 + (end.0 - cx as f64) / end_r * r0, cy as f64 + (end.1 - cy as f64) / end_r * r0) } else { end };
-                fb.line(outer.0 as i32, outer.1 as i32, end.0 as i32, end.1 as i32, 2 + w, BLACK);
+                fb.line(outer.0 as i32, outer.1 as i32, end.0 as i32, end.1 as i32, 5 + w, BLACK);
             }
         }
     }

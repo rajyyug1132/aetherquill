@@ -1,4 +1,4 @@
-# First on-device run: checklist (0.3.5)
+# First on-device run: checklist (0.3.6)
 
 ⛔ **Run this yourself.** Nothing in this build has been verified on hardware.
 Every row below is something the off-device tests can't prove. Tick each one
@@ -10,7 +10,7 @@ rollback section.
   was checked against.
 - Connected over USB, with `ssh root@10.11.99.1` working.
 - Vellum stack installed: xovi, xovi-extensions and appload (README step 1).
-- The bundle `aetherquill-0.3.5.tar.gz`, built with `bash scripts/make-bundle.sh 0.3.5`
+- The bundle `aetherquill-0.3.6.tar.gz`, built with `bash scripts/make-bundle.sh 0.3.6`
   or taken from a GitHub release.
 - **`--uninstall` deletes your spell log.** To keep it, copy it off first:
   `scp root@10.11.99.1:/home/root/wha/spells/log.jsonl .`
@@ -20,8 +20,8 @@ rollback section.
 | # | Do | Expect | ✓/✗ | Notes |
 |---|---|---|---|---|
 | 1.1 | `ssh root@10.11.99.1 "df -h /home"` | several GB free | | |
-| 1.2 | close Aetherquill if it's open, then `scp aetherquill-0.3.5.tar.gz root@10.11.99.1:/home/root/` | copies, no error | | |
-| 1.3 | `ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.5.tar.gz && sh aetherquill-0.3.5/install.sh"` | prints `installed to /home/root/xovi/exthome/appload/aetherquill` | | |
+| 1.2 | close Aetherquill if it's open, then `scp aetherquill-0.3.6.tar.gz root@10.11.99.1:/home/root/` | copies, no error | | |
+| 1.3 | `ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.6.tar.gz && sh aetherquill-0.3.6/install.sh"` | prints `installed to /home/root/xovi/exthome/appload/aetherquill` | | |
 | 1.4 | `ssh root@10.11.99.1 "ls -l /home/root/xovi/exthome/appload/aetherquill /home/root/wha"` | `aetherquill` (rwx) and the manifest; `start-xovi.sh` and `spells/` | | |
 | 1.5 | `ssh root@10.11.99.1 /home/root/wha/start-xovi.sh` | "already loaded", or the screen flickers and xochitl comes back | | |
 | 1.6 | open AppLoad in the tablet UI | "Aetherquill" is listed | | |
@@ -96,10 +96,10 @@ host tests found reliable. Close the ring last.
 | # | Do | Expect | ✓/✗ | Notes |
 |---|---|---|---|---|
 | 7.1 | close Aetherquill from AppLoad | stock UI; notebooks untouched | | |
-| 7.2 | `ssh root@10.11.99.1 "sh /home/root/aetherquill-0.3.5/install.sh --uninstall"` | `removed ... /home/root/wha` (this deletes the spell log) | | |
+| 7.2 | `ssh root@10.11.99.1 "sh /home/root/aetherquill-0.3.6/install.sh --uninstall"` | `removed ... /home/root/wha` (this deletes the spell log) | | |
 | 7.3 | `ssh root@10.11.99.1 "ls /home/root/xovi/exthome/appload/; ls /home/root/wha"` | no `aetherquill` dir; `/home/root/wha` gone | | |
 | 7.4 | reboot | stock tablet; AppLoad no longer lists Aetherquill | | |
-| 7.5 | `ssh root@10.11.99.1 "rm -rf /home/root/aetherquill-0.3.5 /home/root/aetherquill-0.3.5.tar.gz"` | bundle leftovers gone | | |
+| 7.5 | `ssh root@10.11.99.1 "rm -rf /home/root/aetherquill-0.3.6 /home/root/aetherquill-0.3.6.tar.gz"` | bundle leftovers gone | | |
 | 7.6 | re-install (step 1.3) if you're keeping it | — | | |
 
 Full stack rollback, including xovi and Vellum: `rm -rf /home/root/.vellum /home/root/xovi`, then reboot (README step 1).

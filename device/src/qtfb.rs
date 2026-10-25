@@ -18,6 +18,9 @@ pub const MESSAGE_UPDATE: u8 = 1;
 pub const MESSAGE_TERMINATE: u8 = 3;
 pub const MESSAGE_USERINPUT: u8 = 4;
 pub const MESSAGE_SET_REFRESH_MODE: u8 = 5;
+/// Flashing full-quality refresh: the only way to clear the fast waveform's
+/// ghosts. rm-appload's server thread sleeps 1s after it, like a mode change.
+pub const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
 
 pub const UPDATE_ALL: i32 = 0;
 pub const UPDATE_PARTIAL: i32 = 1;
@@ -169,6 +172,12 @@ impl QtfbClient {
         let mut msg = [0u8; 24];
         msg[0] = MESSAGE_SET_REFRESH_MODE;
         msg[4..8].copy_from_slice(&mode.to_le_bytes());
+        self.send_msg(&msg)
+    }
+
+    pub fn request_full_refresh(&self) -> io::Result<()> {
+        let mut msg = [0u8; 24];
+        msg[0] = MESSAGE_REQUEST_FULL_REFRESH;
         self.send_msg(&msg)
     }
 
