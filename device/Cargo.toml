@@ -11,9 +11,8 @@ path = "src/main.rs"
 recognizer = { path = "../recognizer" }
 libc = "0.2"
 font8x8 = "0.3"
-
-[dev-dependencies]
-serde_json = "1" # spell_view tests read recognizer/fixtures
+serde = { version = "1", features = ["derive"] } # catalogue.json (already in the tree via recognizer)
+serde_json = "1"
 
 [profile.release]
 lto = true

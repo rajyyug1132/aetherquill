@@ -21,6 +21,7 @@ use recognizer::ring_detector::Ring;
 use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
 
+mod catalogue;
 mod grimoire;
 mod pen;
 mod qtfb;
@@ -85,9 +86,7 @@ use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
 const _: () = assert!(W == RM2_WIDTH as i32 && H == RM2_HEIGHT as i32);
 
-// ponytail: screen px -> web-canvas px so the vendored CONFIG's pixel-tuned
-// thresholds (ring.minRadius 70 etc.) hold unchanged on a 702x936 canvas.
-const CANVAS_SCALE: f64 = 0.5;
+use catalogue::CANVAS_SCALE;
 const MIN_POINT_DIST: f64 = 1.4 / CANVAS_SCALE;
 const MIN_STROKE_LEN: f64 = 7.0 / CANVAS_SCALE;
 
@@ -131,7 +130,7 @@ fn icon_slot(y: i32) -> Option<i32> {
         return None;
     }
     let slot = rel / (ICON_H + ICON_GAP);
-    if slot <= 4 && rel % (ICON_H + ICON_GAP) < ICON_H {
+    if slot <= 5 && rel % (ICON_H + ICON_GAP) < ICON_H {
         Some(slot)
     } else {
         None
@@ -196,6 +195,14 @@ fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     let y = icon_y(4);
     fb.line(ICON_X + 26, y + 24, ICON_X + 58, y + 56, 3, fg);
     fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
+
+    // Slot 5: Spell Catalogue - a page of listed spells.
+    let fg = icon_frame(fb, 5, false);
+    let y = icon_y(5);
+    fb.rect_outline(ICON_X + 24, y + 16, 36, 48, 3, fg);
+    for row in 0..3 {
+        fb.fill_rect(ICON_X + 31, y + 28 + row * 11, 22, 3, fg);
+    }
 }
 
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
@@ -374,6 +381,29 @@ fn main() {
     let mut digitizer_stroke_live = false;
     let started = Instant::now();
 
+    // Spell Catalogue (catalogue.rs): panel open over the canvas?
+    let spell_catalogue = catalogue::load();
+    let mut catalogue_open = false;
+
+    // Pen-up commit: keep the stroke, re-recognize, snap the ring once per
+    // newly completed ring, show feedback. Shared by pen release, the silence
+    // commit and the Spell Catalogue, which inks through this same path.
+    macro_rules! commit_stroke {
+        ($points:expr) => {{
+            strokes.push(ScreenStroke { id: format!("s{next_id}"), points: $points });
+            next_id += 1;
+            redo.clear();
+            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
+            previous_ring = outcome.ring.clone();
+            let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+            if ring_ids != snapped_ring_ids {
+                snapped_ring_ids = ring_ids;
+                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            }
+            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+        }};
+    }
+
     loop {
         // Block until the socket is readable (input or disconnect).
         let mut pfds = [
@@ -472,7 +502,7 @@ fn main() {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
                     let (x, y) = (event.x as f64, event.y as f64);
                     last_pen_event = Instant::now();
-                    if x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
+                    if catalogue_open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
                         continue;
                     }
                     if erase_mode {
@@ -530,17 +560,7 @@ fn main() {
                     pen_down = false;
                     let points = std::mem::take(&mut current);
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
-                        strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
-                        next_id += 1;
-                        redo.clear();
-                        let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
-                        previous_ring = outcome.ring.clone();
-                        let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-                        if ring_ids != snapped_ring_ids {
-                            snapped_ring_ids = ring_ids;
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-                        }
-                        render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+                        commit_stroke!(points);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
                         redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
@@ -548,6 +568,37 @@ fn main() {
                 }
                 qtfb::INPUT_TOUCH_PRESS => {
                     if pen_down {
+                        continue;
+                    }
+                    // Panel open: a tap picks a spell; anywhere else closes it.
+                    if catalogue_open && event.x >= SIDEBAR_W {
+                        if last_chrome_tap.elapsed().as_millis() < 250 {
+                            continue;
+                        }
+                        last_chrome_tap = Instant::now();
+                        catalogue_open = false;
+                        let Some(i) = catalogue::row_at(event.x, event.y, spell_catalogue.len()) else {
+                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            continue;
+                        };
+                        // Clear the page like the X button (one ring per drawing),
+                        // forget the last activation so the spell plays every
+                        // time, then ink stroke by stroke through the pen-up path.
+                        redo.extend(strokes.drain(..));
+                        previous_ring = None;
+                        snapped_ring_ids.clear();
+                        last_activation.clear();
+                        redraw_all(&mut fb, &client, &strokes, None, erase_mode);
+                        eprintln!("catalogue: inking {}", spell_catalogue[i].id);
+                        for points in spell_catalogue[i].screen_strokes() {
+                            for w in points.windows(2) {
+                                fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
+                            }
+                            let (x0, x1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+                            let (y0, y1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+                            let _ = client.update_partial(x0 as i32 - INK_W, y0 as i32 - INK_W, (x1 - x0) as i32 + 2 * INK_W, (y1 - y0) as i32 + 2 * INK_W);
+                            commit_stroke!(points);
+                        }
                         continue;
                     }
                     // In the canvas: touch-drag moves the stroke under the finger.
@@ -593,7 +644,7 @@ fn main() {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
                             draw_sidebar(&mut fb, erase_mode);
-                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(4) + ICON_H + 12);
+                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(5) + ICON_H + 12);
                             continue;
                         }
                         Some(2) => {
@@ -608,6 +659,16 @@ fn main() {
                         }
                         Some(4) => {
                             redo.extend(strokes.drain(..)); // CLEAR is undoable via redo taps
+                        }
+                        Some(5) => {
+                            catalogue_open = !catalogue_open;
+                            if catalogue_open {
+                                catalogue::draw_panel(&mut fb, &spell_catalogue);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h(spell_catalogue.len()));
+                            } else {
+                                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            }
+                            continue;
                         }
                         _ => continue,
                     }
@@ -662,17 +723,7 @@ fn main() {
             pen_down = false;
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
-                strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
-                next_id += 1;
-                redo.clear();
-                let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
-                previous_ring = outcome.ring.clone();
-                let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-                if ring_ids != snapped_ring_ids {
-                    snapped_ring_ids = ring_ids;
-                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-                }
-                render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+                commit_stroke!(points);
             }
         }
     }

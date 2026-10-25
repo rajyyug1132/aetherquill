@@ -91,6 +91,7 @@ and the [Vellum](https://github.com/vellum-dev/vellum) package manager stack.
 | Sidebar: pen / eraser | Switch tool (eraser deletes strokes the pen touches) |
 | Sidebar: ↶ / ↷ | Undo / redo (erasures and CLEAR are recoverable too) |
 | Sidebar: ✕ | Clear the page |
+| Sidebar: catalogue (bottom) | Pick one of 4 pre-drawn spells (Fire Shoot, Water Orb, Converging Wind, Light Beam): the page clears, its strokes ink in and it casts. Undo removes the strokes. Sources: [lore.md](lore.md) |
 | One-finger drag on a stroke | Move it; recognition re-runs on drop |
 | Close the window from AppLoad | Exit — stock UI keeps running throughout |
 
@@ -121,6 +122,7 @@ cargo run --example effect_preview   # renders all 5 elemental effects to a PPM
 # JS-side parity ground truth
 cd service && node --test            # 3 tests
 node service/parity-gen.mjs          # regenerate fixtures after upstream changes
+node service/catalogue-gen.mjs       # regenerate device/assets/catalogue.json (JS-verified)
 ```
 
 The recognizer port is deliberately 1:1 with the JS — same function names
