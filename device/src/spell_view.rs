@@ -43,13 +43,15 @@ pub struct EffectParams {
     pub strength: f64,
     /// Upstream spread 0..1: widens the overlay.
     pub spread: f64,
+    /// Upstream primary manifestation id ("aura" when no signs).
+    pub manifestation: String,
     pub overlay: Overlay,
 }
 
 impl EffectParams {
     /// Baseline: no signs, compiler defaults — draws exactly the pre-sign effect.
     pub fn aura() -> Self {
-        EffectParams { reach: EFFECT_REACH, weight: 0, strength: 1.0, spread: 0.5, overlay: Overlay::Aura }
+        EffectParams { reach: EFFECT_REACH, weight: 0, strength: 1.0, spread: 0.5, manifestation: "aura".into(), overlay: Overlay::Aura }
     }
 
     pub fn from_ir(ir: &SpellIr) -> Self {
@@ -72,7 +74,7 @@ impl EffectParams {
             },
             _ => Overlay::Aura,
         };
-        EffectParams { reach, weight, strength, spread: ir.spread.clamp(0.0, 1.0), overlay }
+        EffectParams { reach, weight, strength, spread: ir.spread.clamp(0.0, 1.0), manifestation: ir.primary_manifestation.clone(), overlay }
     }
 }
 

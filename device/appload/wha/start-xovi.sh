@@ -16,11 +16,6 @@ set -eu
 
 XOVI_START=/home/root/xovi/start
 
-if [ ! -x "$XOVI_START" ]; then
-    echo "start-xovi: $XOVI_START not found — install xovi via Vellum first" >&2
-    exit 1
-fi
-
 for pid in $(pidof xochitl 2>/dev/null || true); do
     if grep -q xovi.so "/proc/$pid/maps" 2>/dev/null; then
         echo "start-xovi: xovi already loaded in xochitl (pid $pid) — nothing to do"

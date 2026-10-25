@@ -318,13 +318,8 @@ pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, 
     let pad = radius + params.reach;
     fb.clear_seal_annulus(cx, cy, radius, pad);
     fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
-    let label = match params.overlay {
-        Overlay::Aura => "",
-        Overlay::Column { .. } => "column",
-        Overlay::Levitation { .. } => "levitation",
-        Overlay::Convergence { .. } => "convergence",
-    };
-    if !label.is_empty() {
+    let label = &params.manifestation;
+    if label != "aura" {
         fb.text(cx - label.len() as i32 * 3 * 8 / 2, cy + radius + 96, label, 3, BLACK);
     }
 }

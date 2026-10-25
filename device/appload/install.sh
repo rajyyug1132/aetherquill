@@ -19,13 +19,6 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-for f in aetherquill external.manifest.json start-xovi.sh; do
-    if [ ! -f "$HERE/$f" ]; then
-        echo "aetherquill: $f missing from bundle at $HERE — re-extract the release" >&2
-        exit 1
-    fi
-done
-
 if [ ! -d /home/root/xovi/exthome/appload ]; then
     echo "aetherquill: AppLoad not found (/home/root/xovi/exthome/appload)." >&2
     echo "  Install the runtime first: vellum add xovi xovi-extensions appload" >&2

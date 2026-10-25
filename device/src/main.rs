@@ -69,19 +69,6 @@ fn read_digitizer(fd: libc::c_int, decoder: &mut pen::PenDecoder, out: &mut Vec<
     }
 }
 
-/// Calibration pairs land in /home/root/wha/pen.log (capped per run) so a
-/// device run can be checked over SSH.
-fn log_calibration(screen: (f64, f64), window: (i32, i32), logged: &mut u32) {
-    if *logged >= 16 {
-        return;
-    }
-    *logged += 1;
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/home/root/wha/pen.log") {
-        let _ = writeln!(f, "screen {:.0},{:.0} -> window {},{}", screen.0, screen.1, window.0, window.1);
-    }
-}
-
 fn pen_event(input_type: i32, x: f64, y: f64) -> qtfb::InputEvent {
     qtfb::InputEvent { input_type, dev_id: 0, x: x.round() as i32, y: y.round() as i32, d: 0 }
 }
@@ -350,7 +337,6 @@ fn main() {
     let mut next_id: u64 = 1;
     let mut previous_ring: Option<Ring> = None;
     let mut last_activation = String::new();
-    let mut dirty_since = Instant::now();
     // Coalesced refresh: ink lands in shm per-segment, but e-ink update
     // requests flush at most every INK_FLUSH_MS — per-segment update_partial floods
     // the qtfb socket, lags the panel, and drops input events.
@@ -362,7 +348,7 @@ fn main() {
     let mut hold_since = Instant::now();
     let mut hold_snapped = false;
     // Distinguishes "pen still, events trickling" (hold-to-snap) from "pen
-    // gone, no events at all" (silence commit) — both stall dirty_since.
+    // gone, no events at all" (silence commit).
     let mut last_pen_event = Instant::now();
     // Auto ring snap: redraw once per newly completed ring.
     let mut snapped_ring_ids: Vec<String> = Vec::new();
@@ -386,7 +372,6 @@ fn main() {
     let mut samples: Vec<pen::PenSample> = Vec::new();
     let mut last_digitizer_down: Option<((f64, f64), Instant)> = None;
     let mut digitizer_stroke_live = false;
-    let mut calibration_logged = 0u32;
     let started = Instant::now();
 
     loop {
@@ -435,7 +420,6 @@ fn main() {
                             if let Some((screen, at)) = last_digitizer_down.take() {
                                 if at.elapsed().as_millis() < 500 {
                                     calibration.add_pair(screen, (e.x as f64, e.y as f64));
-                                    log_calibration(screen, (e.x, e.y), &mut calibration_logged);
                                 }
                             }
                         }
@@ -526,7 +510,6 @@ fn main() {
                         None => (x0, y0, x1, y1),
                     });
                     current.push((x, y));
-                    dirty_since = Instant::now();
                 }
                 qtfb::INPUT_PEN_RELEASE => {
                     eprintln!("pen release, {} pts", current.len());

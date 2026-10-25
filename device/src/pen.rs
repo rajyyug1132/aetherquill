@@ -90,57 +90,24 @@ impl PenDecoder {
     }
 }
 
-/// Screen px -> window px, per axis `w = scale * s + offset`. Starts as
-/// identity (fullscreen window at the origin, the normal AppLoad case) and is
-/// refit from (digitizer touch-down, AppLoad pen-press) pairs.
+/// Screen px -> window px. Identity until learned (fullscreen window at the
+/// origin, the normal AppLoad case); each (digitizer touch-down, AppLoad
+/// pen-press) pair re-learns the offset. AppLoad draws our 1404x1872 buffer
+/// unscaled, so there's no scale term.
+#[derive(Default)]
 pub struct PenCalibration {
-    pairs: Vec<((f64, f64), (f64, f64))>,
-    sx: f64,
     ox: f64,
-    sy: f64,
     oy: f64,
-}
-
-const CALIBRATION_PAIRS: usize = 16;
-/// Below this screen-px spread one axis can't pin a scale; keep scale, fit offset.
-const MIN_SCALE_SPREAD: f64 = 200.0;
-
-impl Default for PenCalibration {
-    fn default() -> Self {
-        PenCalibration { pairs: Vec::new(), sx: 1.0, ox: 0.0, sy: 1.0, oy: 0.0 }
-    }
 }
 
 impl PenCalibration {
     pub fn map(&self, x: f64, y: f64) -> (f64, f64) {
-        (self.sx * x + self.ox, self.sy * y + self.oy)
+        (x + self.ox, y + self.oy)
     }
 
     pub fn add_pair(&mut self, screen: (f64, f64), window: (f64, f64)) {
-        self.pairs.push((screen, window));
-        if self.pairs.len() > CALIBRATION_PAIRS {
-            self.pairs.remove(0);
-        }
-        let xs: Vec<(f64, f64)> = self.pairs.iter().map(|(s, w)| (s.0, w.0)).collect();
-        let ys: Vec<(f64, f64)> = self.pairs.iter().map(|(s, w)| (s.1, w.1)).collect();
-        (self.sx, self.ox) = fit_axis(&xs, self.sx);
-        (self.sy, self.oy) = fit_axis(&ys, self.sy);
+        (self.ox, self.oy) = (window.0 - screen.0, window.1 - screen.1);
     }
-}
-
-fn fit_axis(pairs: &[(f64, f64)], current_scale: f64) -> (f64, f64) {
-    let n = pairs.len() as f64;
-    let mean_s = pairs.iter().map(|p| p.0).sum::<f64>() / n;
-    let mean_w = pairs.iter().map(|p| p.1).sum::<f64>() / n;
-    let (min_s, max_s) = pairs.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
-    let scale = if max_s - min_s >= MIN_SCALE_SPREAD {
-        let cov: f64 = pairs.iter().map(|p| (p.0 - mean_s) * (p.1 - mean_w)).sum();
-        let var: f64 = pairs.iter().map(|p| (p.0 - mean_s).powi(2)).sum();
-        (cov / var).clamp(0.5, 2.0)
-    } else {
-        current_scale
-    };
-    (scale, mean_w - scale * mean_s)
 }
 
 /// Commit a digitizer stroke only if AppLoad also saw pen input for it, i.e.
@@ -259,18 +226,7 @@ mod tests {
         assert_eq!(c.map(100.0, 200.0), (100.0, 200.0));
         c.add_pair((500.0, 700.0), (480.0, 640.0));
         assert_eq!(c.map(500.0, 700.0), (480.0, 640.0));
-        assert_eq!(c.map(600.0, 800.0), (580.0, 740.0), "one pair: offset only, scale kept at 1");
-    }
-
-    #[test]
-    fn calibration_learns_scale_from_spread_pairs() {
-        let mut c = PenCalibration::default();
-        // Window drawn at half size, offset (100, 50).
-        for (sx, sy) in [(200.0, 300.0), (1200.0, 1700.0), (700.0, 900.0)] {
-            c.add_pair((sx, sy), (sx * 0.5 + 100.0, sy * 0.5 + 50.0));
-        }
-        let (x, y) = c.map(1000.0, 1000.0);
-        assert!((x - 600.0).abs() < 1e-9 && (y - 550.0).abs() < 1e-9, "{x},{y}");
+        assert_eq!(c.map(600.0, 800.0), (580.0, 740.0));
     }
 
     #[test]

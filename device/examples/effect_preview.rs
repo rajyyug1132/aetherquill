@@ -49,7 +49,7 @@ fn main() {
         let mut px = vec![0xffffu16; (W * H) as usize];
         let mut fb = Fb { px: &mut px };
         let (cx, cy, radius) = (W / 2, H / 2, 150);
-        let params = EffectParams { reach: EFFECT_REACH + 30, weight: 1, strength: 0.65, spread: 0.4, overlay };
+        let params = EffectParams { reach: EFFECT_REACH + 30, weight: 1, strength: 0.65, spread: 0.4, manifestation: String::new(), overlay };
         effect_frame(&mut fb, cx, cy, radius, "fire", EFFECT_FRAMES * 2 / 3, &params);
         let half = tile / 2;
         for ty in 0..tile {
