@@ -17,7 +17,6 @@ use recognizer::config::{COMPILER, EFFECT_SIZE, INPUT, LAYERS, RECOGNITION, RING
 use recognizer::dictionaries::load_dictionary;
 use recognizer::symbol_recognizer::Dictionary;
 use recognizer::drawing_classifier::classify_drawing;
-use recognizer::geometry::Point;
 use recognizer::ring_detector::Ring;
 use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
@@ -25,6 +24,7 @@ use recognizer::stroke_cleaner::RawStroke;
 mod grimoire;
 mod qtfb;
 
+use device::session::{to_raw_strokes, ScreenStroke, Session};
 use device::{catalogue, pen, render, resume, shapes, spell_view};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
@@ -92,21 +92,6 @@ const INK_W: i32 = 3;
 /// Coalesced ink refresh interval. Per-segment updates (~200Hz pen) flood the
 /// qtfb socket; 40ms (25Hz) was the first safe value, 16ms (~60Hz) the current.
 const INK_FLUSH_MS: u128 = 16;
-
-struct ScreenStroke {
-    id: String,
-    points: Vec<(f64, f64)>,
-}
-
-fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
-    strokes
-        .iter()
-        .map(|s| RawStroke {
-            id: s.id.clone(),
-            points: s.points.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect(),
-        })
-        .collect()
-}
 
 // Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
 const SIDEBAR_W: i32 = 110;
@@ -252,13 +237,6 @@ fn recognize(dictionary: &Dictionary, raw: &[RawStroke], previous_ring: Option<&
     SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }
 }
 
-/// Complete-ring stroke ids that redraw_all would snap right now.
-fn snapped_ids(ring: Option<&Ring>, strokes: &[ScreenStroke]) -> Vec<String> {
-    ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)))
-        .map(|r| r.stroke_ids.clone())
-        .unwrap_or_default()
-}
-
 type RecognitionJob = (u64, Vec<RawStroke>, Option<Ring>);
 
 /// Recognition on a worker thread. On the RM2 one classify + compile takes
@@ -394,13 +372,10 @@ fn main() {
     let _ = client.update_all();
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
-    let mut strokes: Vec<ScreenStroke> = Vec::new();
-    let mut redo: Vec<ScreenStroke> = Vec::new();
+    // The page (session.rs): strokes, redo stack, last ring, snapped-ring ids.
+    let mut session = Session::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
     let mut pen_down = false;
-    let mut next_id: u64 = 1;
-    let mut previous_ring: Option<Ring> = None;
-    let mut last_activation = String::new();
     // Coalesced refresh: ink lands in shm per-segment, but e-ink update
     // requests flush at most every INK_FLUSH_MS — per-segment update_partial floods
     // the qtfb socket, lags the panel, and drops input events.
@@ -414,8 +389,6 @@ fn main() {
     // Distinguishes "pen still, events trickling" (hold-to-snap) from "pen
     // gone, no events at all" (silence commit).
     let mut last_pen_event = Instant::now();
-    // Auto ring snap: redraw once per newly completed ring.
-    let mut snapped_ring_ids: Vec<String> = Vec::new();
     // ERASE toggle (chrome button) — pen deletes strokes instead of inking.
     let mut erase_mode = false;
     let mut erased_any = false;
@@ -450,10 +423,8 @@ fn main() {
     // this same path.
     macro_rules! commit_stroke {
         ($points:expr) => {{
-            strokes.push(ScreenStroke { id: format!("s{next_id}"), points: $points });
-            next_id += 1;
-            redo.clear();
-            recognizer.request(&strokes, previous_ring.clone());
+            session.commit($points);
+            recognizer.request(&session.strokes, session.previous_ring.clone());
         }};
     }
 
@@ -462,13 +433,10 @@ fn main() {
     macro_rules! apply_outcome {
         ($outcome:expr) => {{
             let outcome = $outcome;
-            previous_ring = outcome.ring.clone();
-            let ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
-            if ring_ids != snapped_ring_ids {
-                snapped_ring_ids = ring_ids;
-                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            if session.apply_ring(outcome.ring.clone()) {
+                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
             }
-            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+            render_feedback(&mut fb, &client, &outcome, &mut session.last_activation);
         }};
     }
 
@@ -476,9 +444,9 @@ fn main() {
     // resume): repaint now, recognize in the background.
     macro_rules! repaint_and_recognize {
         ($previous_ring:expr) => {{
-            snapped_ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-            recognizer.request(&strokes, $previous_ring);
+            session.resnap();
+            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
+            recognizer.request(&session.strokes, $previous_ring);
         }};
     }
 
@@ -496,14 +464,14 @@ fn main() {
         unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
 
         if resume.observe(clock_s(libc::CLOCK_BOOTTIME), clock_s(libc::CLOCK_MONOTONIC)) {
-            eprintln!("resume detected — redrawing from {} strokes", strokes.len());
+            eprintln!("resume detected — redrawing from {} strokes", session.strokes.len());
             // A stroke cut off by the nap is unreliable: drop it.
             pen_down = false;
             current.clear();
             dirty_rect = None;
             moving = None;
             // The result restores the status line; same signature, so no replay.
-            repaint_and_recognize!(previous_ring.clone());
+            repaint_and_recognize!(session.previous_ring.clone());
         }
 
         let mut events = match client.drain_events() {
@@ -570,7 +538,7 @@ fn main() {
             pen_down = false;
             current.clear();
             dirty_rect = None;
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
         }
 
         for event in events {
@@ -583,13 +551,9 @@ fn main() {
                     }
                     if erase_mode {
                         // Pen is an eraser: delete any stroke it touches.
-                        let hit = strokes.iter().position(|s| {
-                            s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 20.0)
-                        });
-                        if let Some(idx) = hit {
-                            redo.push(strokes.remove(idx));
+                        if session.erase_at(x, y) {
                             erased_any = true;
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                         }
                         continue;
                     }
@@ -635,7 +599,7 @@ fn main() {
                         commit_stroke!(points);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
-                        redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                        redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                     }
                 }
                 // Real finger-up (rm-appload 0.5.3 sends it per lifted point):
@@ -659,32 +623,28 @@ fn main() {
                         last_chrome_tap = Instant::now();
                         catalogue_open = false;
                         let Some(i) = catalogue::row_at(event.x, event.y, spell_catalogue.len()) else {
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                             continue;
                         };
-                        // Replace the page (one ring per drawing; the first
-                        // commit clears redo, so the old drawing is gone, as when
-                        // drawing after X), forget the last activation so the
-                        // spell plays every time, then ink stroke by stroke
-                        // through the pen-up path.
+                        // Replace the page (session.pick_catalogue: the old drawing is
+                        // gone, the last activation forgotten so the spell plays
+                        // every time), then ink the new strokes on screen.
                         touch_until_lift_ignored = true;
                         last_touch = Instant::now();
-                        redo.extend(strokes.drain(..));
-                        previous_ring = None;
-                        snapped_ring_ids.clear();
-                        last_activation.clear();
-                        redraw_all(&mut fb, &client, &strokes, None, erase_mode);
+                        session.pick_catalogue(spell_catalogue[i].screen_strokes());
+                        redraw_all(&mut fb, &client, &[], None, erase_mode);
                         let _ = client.request_full_refresh();
                         eprintln!("catalogue: inking {}", spell_catalogue[i].id);
-                        for points in spell_catalogue[i].screen_strokes() {
+                        for stroke in &session.strokes {
+                            let points = &stroke.points;
                             for w in points.windows(2) {
                                 fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                             }
                             let (x0, x1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
                             let (y0, y1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
                             let _ = client.update_partial(x0 as i32 - INK_W, y0 as i32 - INK_W, (x1 - x0) as i32 + 2 * INK_W, (y1 - y0) as i32 + 2 * INK_W);
-                            commit_stroke!(points);
                         }
+                        recognizer.request(&session.strokes, None);
                         continue;
                     }
                     if touch_until_lift_ignored && event.x >= SIDEBAR_W {
@@ -698,21 +658,15 @@ fn main() {
                         match moving {
                             Some((idx, id, lx, ly)) if id == event.dev_id => {
                                 let (dx, dy) = (x - lx, y - ly);
-                                for p in &mut strokes[idx].points {
-                                    p.0 += dx;
-                                    p.1 += dy;
-                                }
+                                session.move_stroke(idx, dx, dy);
                                 moving = Some((idx, id, x, y));
                                 if move_redraw.elapsed().as_millis() > 150 {
                                     move_redraw = Instant::now();
-                                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                    redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                                 }
                             }
                             None => {
-                                let grab = strokes.iter().position(|s| {
-                                    s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 40.0)
-                                });
-                                if let Some(idx) = grab {
+                                if let Some(idx) = session.grab_at(x, y) {
                                     moving = Some((idx, event.dev_id, x, y));
                                 }
                             }
@@ -739,19 +693,15 @@ fn main() {
                         }
                         Some(2) => {
                             catalogue_open = false;
-                            if let Some(s) = strokes.pop() {
-                                redo.push(s);
-                            }
+                            session.undo();
                         }
                         Some(3) => {
                             catalogue_open = false;
-                            if let Some(s) = redo.pop() {
-                                strokes.push(s);
-                            }
+                            session.redo();
                         }
                         Some(4) => {
                             catalogue_open = false;
-                            redo.extend(strokes.drain(..)); // CLEAR is undoable via redo taps
+                            session.clear(); // CLEAR is undoable via redo taps
                         }
                         Some(5) => {
                             catalogue_open = !catalogue_open;
@@ -759,7 +709,7 @@ fn main() {
                                 catalogue::draw_panel(&mut fb, &spell_catalogue);
                                 let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h(spell_catalogue.len()));
                             } else {
-                                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                             }
                             continue;
                         }
@@ -801,7 +751,7 @@ fn main() {
             moving = None;
             // A dragged ring stroke makes the old snapped circle wrong: drop it
             // until the result re-snaps.
-            previous_ring = None;
+            session.previous_ring = None;
             repaint_and_recognize!(None);
         }
 
@@ -811,7 +761,7 @@ fn main() {
             hold_snapped = true;
             if let Some(snapped) = snap_stroke(&current) {
                 current = snapped;
-                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                 for w in current.windows(2) {
                     fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                 }
