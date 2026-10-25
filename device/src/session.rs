@@ -12,6 +12,8 @@ use crate::catalogue::CANVAS_SCALE;
 pub struct ScreenStroke {
     pub id: String,
     pub points: Vec<(f64, f64)>,
+    /// Strokes inked together (a catalogue pick) undo and redo as one step.
+    pub group: Option<u64>,
 }
 
 pub fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
@@ -39,6 +41,7 @@ pub struct Session {
     /// Signature of the spell whose activation animation last played.
     pub last_activation: String,
     next_id: u64,
+    next_group: u64,
 }
 
 impl Default for Session {
@@ -49,14 +52,18 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        Session { strokes: Vec::new(), redo: Vec::new(), previous_ring: None, snapped_ring_ids: Vec::new(), last_activation: String::new(), next_id: 1 }
+        Session { strokes: Vec::new(), redo: Vec::new(), previous_ring: None, snapped_ring_ids: Vec::new(), last_activation: String::new(), next_id: 1, next_group: 1 }
     }
 
     /// Pen-up: keep the stroke, drop the redo history. Returns the new id.
     pub fn commit(&mut self, points: Vec<(f64, f64)>) -> String {
+        self.commit_in(points, None)
+    }
+
+    fn commit_in(&mut self, points: Vec<(f64, f64)>, group: Option<u64>) -> String {
         let id = format!("s{}", self.next_id);
         self.next_id += 1;
-        self.strokes.push(ScreenStroke { id: id.clone(), points });
+        self.strokes.push(ScreenStroke { id: id.clone(), points, group });
         self.redo.clear();
         id
     }
@@ -70,14 +77,22 @@ impl Session {
 
     pub fn undo(&mut self) -> bool {
         let Some(s) = self.strokes.pop() else { return false };
+        let group = s.group;
         self.redo.push(s);
+        while group.is_some() && self.strokes.last().is_some_and(|t| t.group == group) {
+            self.redo.extend(self.strokes.pop());
+        }
         self.forget_cast_if_empty();
         true
     }
 
     pub fn redo(&mut self) -> bool {
         let Some(s) = self.redo.pop() else { return false };
+        let group = s.group;
         self.strokes.push(s);
+        while group.is_some() && self.redo.last().is_some_and(|t| t.group == group) {
+            self.strokes.extend(self.redo.pop());
+        }
         true
     }
 
@@ -119,8 +134,10 @@ impl Session {
         self.previous_ring = None;
         self.snapped_ring_ids.clear();
         self.last_activation.clear(); // the spell plays every time
+        let group = Some(self.next_group);
+        self.next_group += 1;
         for points in spell {
-            self.commit(points);
+            self.commit_in(points, group);
         }
     }
 
