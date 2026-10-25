@@ -384,6 +384,9 @@ fn main() {
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
     let mut catalogue_open = false;
+    // After a catalogue pick, the same finger's queued touch events must not
+    // drag the freshly inked strokes: ignore canvas touch until it lifts.
+    let mut touch_until_lift_ignored = false;
 
     // Pen-up commit: keep the stroke, re-recognize, snap the ring once per
     // newly completed ring, show feedback. Shared by pen release, the silence
@@ -581,9 +584,13 @@ fn main() {
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                             continue;
                         };
-                        // Clear the page like the X button (one ring per drawing),
-                        // forget the last activation so the spell plays every
-                        // time, then ink stroke by stroke through the pen-up path.
+                        // Replace the page (one ring per drawing; the first
+                        // commit clears redo, so the old drawing is gone, as when
+                        // drawing after X), forget the last activation so the
+                        // spell plays every time, then ink stroke by stroke
+                        // through the pen-up path.
+                        touch_until_lift_ignored = true;
+                        last_touch = Instant::now();
                         redo.extend(strokes.drain(..));
                         previous_ring = None;
                         snapped_ring_ids.clear();
@@ -599,6 +606,10 @@ fn main() {
                             let _ = client.update_partial(x0 as i32 - INK_W, y0 as i32 - INK_W, (x1 - x0) as i32 + 2 * INK_W, (y1 - y0) as i32 + 2 * INK_W);
                             commit_stroke!(points);
                         }
+                        continue;
+                    }
+                    if touch_until_lift_ignored && event.x >= SIDEBAR_W {
+                        last_touch = Instant::now();
                         continue;
                     }
                     // In the canvas: touch-drag moves the stroke under the finger.
@@ -648,16 +659,19 @@ fn main() {
                             continue;
                         }
                         Some(2) => {
+                            catalogue_open = false;
                             if let Some(s) = strokes.pop() {
                                 redo.push(s);
                             }
                         }
                         Some(3) => {
+                            catalogue_open = false;
                             if let Some(s) = redo.pop() {
                                 strokes.push(s);
                             }
                         }
                         Some(4) => {
+                            catalogue_open = false;
                             redo.extend(strokes.drain(..)); // CLEAR is undoable via redo taps
                         }
                         Some(5) => {
@@ -689,6 +703,10 @@ fn main() {
                 dirty_rect = None;
                 last_flush = Instant::now();
             }
+        }
+
+        if touch_until_lift_ignored && last_touch.elapsed().as_millis() > 400 {
+            touch_until_lift_ignored = false;
         }
 
         // Finger lifted mid-drag: commit the move, re-recognize.

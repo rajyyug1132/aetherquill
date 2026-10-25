@@ -6,7 +6,9 @@ and no artwork is included.
 
 - **Wiki:** [Witch Hat Atelier Wiki](https://witch-hat-atelier.fandom.com/wiki/Spells),
   read on 2026-10-25 in the built-in browser. The plain fetcher got HTTP 402.
-  Pages used: *Spells*, *Signs Explained*, *Light Beam* and *Grasping Wind*.
+  Pages read: *Spells*, *Signs Explained*, *Light Beam* and *Grasping Wind*.
+  *Sylph Shoes Seal* and *Wind Wall* were seen only in the wiki's search-result
+  summaries, not opened.
 - **Vendored dictionaries:** read-only ground truth in `service/vendor/wha/src/dictionary/`.
   They hold the sigil and sign templates (`sigils.json`, `signs.json`) and two
   named samples (`sample-spells.json`).
@@ -29,9 +31,9 @@ and no artwork is included.
 **Why:**
 - The vendored sample `fire-column` is called "Fire Shoot" and described as
   shooting fire.
-- The wiki's *Signs Explained* says column keystones make a spell's magic come out
-  as a column or beam above the glyph. If the signs are unbalanced, it leans toward
-  the side with more of them (manga ch. 3, p. 16).
+- Per the wiki's *Signs Explained*, column keystones send the magic straight up
+  off the glyph in a pillar. Lopsided placement tilts it toward the busier side
+  (manga ch. 3, p. 16).
 
 **Strokes:** the sample's strokes are used unchanged, scaled to the canvas. One
 closing stroke traces the ring line at the end. The sample's ring is drawn as
@@ -45,8 +47,8 @@ a prepared spell until the ring is closed. Closing the ring is what casts it.
 **Why:**
 - The vendored sample `water-orb` is called "Water Orb" and described as a water
   sigil with levitating signs.
-- The wiki's *Signs Explained* says levitation makes a spell's magic float above
-  the glyph, or moves the object it is drawn on.
+- Per the wiki's *Signs Explained*, levitation keeps the conjured element
+  hovering over the glyph. Drawn on an object, it moves that object instead.
 
 **Strokes:** built from the dictionary's water sigil plus one levitation sign
 drawn directly below the seal. The vendored sample was dropped after three fixes:
@@ -59,13 +61,13 @@ rebuild on 2026-10-25.
 **What it does:** draws the wind's force together onto a single point.
 
 **Why:**
-- The wiki's *Signs Explained* says convergence focuses a spell's magic down to
-  one point, and can make loose particles hold together more firmly.
+- Per the wiki's *Signs Explained*, convergence narrows a spell onto a single
+  spot, and can pack loose material tighter.
 - The dictionary's `wind-directs-air` is the wind sigil.
 
 **Not a canon spell.** No spell on the wiki pairs wind with convergence alone:
 - *Sylph Shoes Seal* alternates convergence and levitation keystones around a wind sigil.
-- *Wind Wall* adds inverted column signs and another sign.
+- *Wind Wall* mixes convergence with inverted column signs and one more sign.
 - *Grasping Wind* (manga ch. 14) pulls air toward the glyph, but the wiki lists it
   under **Pull** signs, a different sign that is not in the vendored dictionary.
 
@@ -77,13 +79,13 @@ drawn directly below the seal.
 
 ## C4 Light Beam (light + column)
 
-**What it does:** sends a beam of light up from the glyph. The neater the
-drawing, the steadier the beam.
+**What it does:** raises a shaft of light from the glyph. Careful linework
+keeps it from wavering.
 
 **Why:**
-- The wiki's *Light Beam* page gives this exact pairing: a light sigil ringed by
-  column keystones, making an upward beam that holds steadier when the glyph is
-  drawn precisely. Agott uses it during drawing practice.
+- The wiki's *Light Beam* page names this pairing directly (light sigil, column
+  keystones around it) and says drawing accuracy affects how stable the light
+  is. It shows up in Agott's practice sessions.
 - The wiki also notes that light magic counts as a branch of fire magic
   (manga ch. 29, p. 13).
 
@@ -94,7 +96,7 @@ keystones. One sign is enough for the recognizer to read it back.
 ## Still open
 
 - Earth is left out on purpose. `ring-earth` is ambiguous in the ground truth
-  (see the CLAUDE.md quirk list).
+  (see the known ground-truth quirks in LOOP.md).
 - Signs drawn from the templates are recognized reliably only in the outer band
   directly below the seal. That's why C2–C4 use one sign each, placed there,
   instead of the wiki's full rings of keystones.
