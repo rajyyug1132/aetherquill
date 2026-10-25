@@ -73,7 +73,16 @@ function centred(pointLists) {
 
 function fromSample(id) {
   const sample = samples.find((s) => s.id === id);
-  const strokes = centred(sample.strokes.map((s) => s.map((p) => ({ x: p.x * SAMPLE_SIZE, y: p.y * SAMPLE_SIZE }))));
+  // The sample's own sigil reads as ambiguous (close to light) on ~3% of
+  // jittered redraws (P4); its strokes near the centre are swapped for the
+  // dictionary template at the same size. Ring and signs stay the sample's.
+  const central = (s) => s.every((p) => Math.hypot(p.x - 0.5, p.y - 0.5) < 0.2);
+  const sig = sample.strokes.filter(central).flat();
+  const [x0, x1] = [Math.min(...sig.map((p) => p.x)), Math.max(...sig.map((p) => p.x))];
+  const [y0, y1] = [Math.min(...sig.map((p) => p.y)), Math.max(...sig.map((p) => p.y))];
+  const sigil = templatePoints("sigils", sample.element, (x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0));
+  const raw = [...sample.strokes.filter((s) => !central(s)), ...sigil];
+  const strokes = centred(raw.map((s) => s.map((p) => ({ x: p.x * SAMPLE_SIZE, y: p.y * SAMPLE_SIZE }))));
   return [...strokes, closingStroke(run(strokes).pipeline.ring)];
 }
 

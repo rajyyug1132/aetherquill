@@ -19,7 +19,7 @@ and no artwork is included.
 
 | # | Spell | Sigil | Sign | Canon? | Strokes |
 |---|---|---|---|---|---|
-| C1 | Fire Shoot | `fire` | `column` | name from the vendored sample | vendored sample + 1 closing stroke |
+| C1 | Fire Shoot | `fire` | `column` | name from the vendored sample | vendored sample ring + signs, template sigil, 1 closing stroke |
 | C2 | Water Orb | `water` | `levitation` | name from the vendored sample | built from dictionary templates |
 | C3 | Converging Wind | `wind-directs-air` | `convergence` | **no**: named for this project | built from dictionary templates |
 | C4 | Light Beam | `light` | `column` | **yes**: wiki *Light Beam* | built from dictionary templates |
@@ -35,8 +35,11 @@ and no artwork is included.
   off the glyph in a pillar. Lopsided placement tilts it toward the busier side
   (manga ch. 3, p. 16).
 
-**Strokes:** the sample's strokes are used unchanged, scaled to the canvas. One
-closing stroke traces the ring line at the end. The sample's ring is drawn as
+**Strokes:** the sample's ring and column signs are used unchanged, scaled to
+the canvas. Its fire sigil is swapped for the dictionary's fire template at the
+same size: the sample's own sigil read as ambiguous (too close to light) on
+about 3% of jittered redraws in the P4 eval. The owner approved the swap on
+2026-10-25. One closing stroke traces the ring line at the end. The sample's ring is drawn as
 separate segments, with gaps of up to about 41 px at that scale, so it reads as
 a prepared spell until the ring is closed. Closing the ring is what casts it.
 
