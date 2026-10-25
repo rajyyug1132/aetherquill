@@ -1,8 +1,6 @@
 {
   "permissions": {
     "deny": [
-      "Bash(ssh *)",
-      "Bash(scp *)",
       "Edit(./service/vendor/wha/**)",
       "Bash(git push --force *)"
     ]
