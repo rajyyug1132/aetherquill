@@ -38,9 +38,10 @@ reMarkable UI. No phone, no screen glow, no network.
   their own e-ink activation: rising flames, ripples, curling wind, rising
   earth, radiant light. Column, levitation and convergence signs change the
   compiled spell, and the status line shows by how much.
-* **Spell Catalogue.** One tap inks a ready-made spell (Fire Shoot, Water Orb,
-  Converging Wind, Light Beam) and casts it through the same pen-up path as a
-  hand-drawn one. Each entry is replayed stroke by stroke in the tests and must
+* **Spell Catalogue.** One tap inks one of 12 ready-made spells (Fire Shoot,
+  Pyreball Seal, Watershot Seal, Skysoaring Seal, Water Orb, Light Beam,
+  Converging Wind/Flame/Water/Light, Wind Pillar, Floating Light) and
+  casts it through the same pen-up path as a hand-drawn one. Each entry is replayed stroke by stroke in the tests and must
   cast with the exact signature the original JS gives. Sources are in
   [lore.md](lore.md).
 * **A real drawing surface.** Rings snap to perfect circles. Hold the pen
@@ -155,7 +156,7 @@ sigil in its center: fire, water, wind, earth or light. Sample layouts are in
 | Sidebar: pen / eraser | Switch tool. The eraser deletes the strokes it touches |
 | Sidebar: ↶ / ↷ | Undo / redo. Erasing and clearing can be undone too |
 | Sidebar: ✕ | Clear the page |
-| Sidebar: catalogue (bottom icon) | Pick a ready-made spell. The page clears, its strokes ink in and it casts. Undo removes it |
+| Sidebar: catalogue (bottom icon) | Pick one of 12 ready-made spells. The page clears, its strokes ink in and it casts. Undo removes it |
 | One-finger drag on a stroke | Move it; recognition re-runs on drop |
 | Close the window from AppLoad | Exit. The stock UI keeps running throughout |
 
