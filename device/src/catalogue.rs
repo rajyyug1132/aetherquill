@@ -97,16 +97,19 @@ mod tests {
     /// re-recognizing after each with the previous ring (main.rs's pen-up
     /// path), screen px -> canvas px through CANVAS_SCALE.
     fn ink_like_the_device(spell: &CatalogueSpell) -> recognizer::spell_builder::SpellIr {
-        let dictionary = load_dictionary();
+        replay_like_the_device(&spell.screen_strokes(), &load_dictionary())
+    }
+
+    fn replay_like_the_device(screen_strokes: &[Vec<(f64, f64)>], dictionary: &recognizer::symbol_recognizer::Dictionary) -> recognizer::spell_builder::SpellIr {
         let mut raw: Vec<RawStroke> = Vec::new();
         let mut previous_ring: Option<Ring> = None;
         let mut last = None;
-        for (i, stroke) in spell.screen_strokes().into_iter().enumerate() {
+        for (i, stroke) in screen_strokes.iter().enumerate() {
             raw.push(RawStroke {
                 id: format!("s{}", i + 1),
                 points: stroke.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect(),
             });
-            let result = classify_drawing(&raw, previous_ring.as_ref(), &dictionary, "test", &INPUT, &RING, &LAYERS, &RECOGNITION);
+            let result = classify_drawing(&raw, previous_ring.as_ref(), dictionary, "test", &INPUT, &RING, &LAYERS, &RECOGNITION);
             last = Some(compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE));
             previous_ring = result.ring.found.then_some(result.ring);
         }
@@ -151,6 +154,54 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// Fresh validation seeds, fixed 2026-10-25 after the catalogue was final
+    /// and never used for tuning. Same jitter, but replayed stroke by stroke
+    /// with the previous ring, exactly as the tablet inks a catalogue pick.
+    const FRESH_SEEDS: [u64; 2] = [0xc0ff_ee01, 0x2468_ace0];
+    const FRESH_REDRAWS: usize = 10;
+
+    fn reads_back(ir: &recognizer::spell_builder::SpellIr, e: &Expected) -> bool {
+        ir.active && ir.element.as_deref() == Some(e.element.as_str()) && ir.primary_manifestation == e.primary_manifestation
+    }
+
+    fn spell_seed(seed: u64, spell: &CatalogueSpell) -> Rng {
+        Rng(seed ^ spell.id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)))
+    }
+
+    #[test]
+    #[ignore = "P4 eval, slow in debug: cargo test --release --lib -- --ignored jittered"]
+    fn jittered_fresh_seeds_replayed_like_the_device() {
+        let dictionary = load_dictionary();
+        let mut failures = Vec::new();
+        for spell in load() {
+            let mut passed = 0;
+            for seed in FRESH_SEEDS {
+                let mut rng = spell_seed(seed, &spell);
+                for i in 0..FRESH_REDRAWS {
+                    let ir = replay_like_the_device(&jittered(&spell, &mut rng), &dictionary);
+                    if reads_back(&ir, &spell.expected) {
+                        passed += 1;
+                    } else {
+                        failures.push(format!("{} fresh {seed:#x} #{i}: {} {:?} {} {:?}", spell.id, ir.status, ir.element, ir.primary_manifestation, ir.warnings));
+                    }
+                }
+            }
+            println!("P4 fresh {}: {passed}/{}", spell.id, FRESH_SEEDS.len() * FRESH_REDRAWS);
+        }
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    }
+
+    /// Default-suite slice of P4 (the full evals are #[ignore]d for debug
+    /// speed): one jittered redraw per spell, replayed like the device.
+    #[test]
+    fn one_jittered_redraw_per_spell_reads_back() {
+        let dictionary = load_dictionary();
+        for spell in load() {
+            let ir = replay_like_the_device(&jittered(&spell, &mut spell_seed(FRESH_SEEDS[0], &spell)), &dictionary);
+            assert!(reads_back(&ir, &spell.expected), "{}: {} {:?} {} {:?}", spell.id, ir.status, ir.element, ir.primary_manifestation, ir.warnings);
+        }
     }
 
     #[test]
