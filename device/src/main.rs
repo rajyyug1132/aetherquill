@@ -386,13 +386,13 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
     }
 
     // Covers the settle frame's labels and the widest reach a sign can give.
+    // Clamped to the canvas and the screen, like effect_dirty_rect.
     let pad = 90.max(params.reach);
-    let _ = client.update_partial(
-        (cx - radius - pad).max(0),
-        (cy - radius - pad).max(0),
-        (radius + pad) * 2,
-        (radius + pad) * 2,
-    );
+    let (x0, y0) = ((cx - radius - pad).max(render::CANVAS_LEFT), (cy - radius - pad).max(render::CANVAS_TOP));
+    let (x1, y1) = ((cx + radius + pad).min(W), (cy + radius + pad).min(H));
+    if x1 > x0 && y1 > y0 {
+        let _ = client.update_partial(x0, y0, x1 - x0, y1 - y0);
+    }
 }
 
 fn main() {
