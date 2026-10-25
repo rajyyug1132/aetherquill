@@ -45,8 +45,8 @@ pub fn load() -> Vec<CatalogueSpell> {
     serde_json::from_str(include_str!("../assets/catalogue.json")).expect("assets/catalogue.json: regenerate with node service/catalogue-gen.mjs")
 }
 
-// Panel over the drawing area, right of the 110px sidebar, under the status strip.
-pub const PANEL_X: i32 = 134;
+// Panel over the drawing area, right of the sidebar, under the status strip.
+pub const PANEL_X: i32 = crate::chrome::SIDEBAR_W + 24;
 pub const PANEL_Y: i32 = 88;
 pub const PANEL_W: i32 = 1404 - PANEL_X - 24;
 const TITLE_H: i32 = 90;

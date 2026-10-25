@@ -26,7 +26,7 @@ mod grimoire;
 mod qtfb;
 
 use device::{catalogue, chrome, pen, render, resume, shapes, spell_view};
-use chrome::{icon_slot, SIDEBAR_W, STATUS_H};
+use chrome::{slot_at, SIDEBAR_W, STATUS_H};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
@@ -629,8 +629,8 @@ fn main() {
                         continue;
                     }
                     last_chrome_tap = Instant::now();
-                    let slot = icon_slot(event.y);
-                    eprintln!("sidebar tap y={} -> slot {:?}", event.y, slot);
+                    let slot = slot_at(event.x, event.y);
+                    eprintln!("sidebar tap {},{} -> slot {:?}", event.x, event.y, slot);
                     match slot {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
