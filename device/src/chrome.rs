@@ -1,7 +1,10 @@
 //! Screen chrome: the left toolbar, the status strip and sidebar hit-testing.
 //! Pure pixel math on `Fb` (no qtfb), so it can be host-rendered and tested.
 
+use recognizer::spell_builder::SpellIr;
+
 use crate::render::{Fb, BLACK, GRAY, H, W, WHITE};
+use crate::spell_view::status_lines;
 
 // Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear, catalogue.
 // Every icon box is also its hit box and is at least MIN_TAP px square: a finger
@@ -112,15 +115,58 @@ pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     }
 }
 
-/// Draws the two status lines in the strip right of the sidebar. Returns the
-/// dirty rect (x, y, w, h) for the caller to push to the screen.
+/// Fits `text` into `max_chars`: whole if it fits, else cut back to a word
+/// boundary (when one is near) and ended with "...".
+pub fn fit(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    let mut cut = &chars[..max_chars.saturating_sub(3)];
+    if let Some(i) = cut.iter().rposition(|&c| c == ' ') {
+        if cut.len() - i <= 14 {
+            cut = &cut[..i];
+        }
+    }
+    let kept: String = cut.iter().collect();
+    format!("{}...", kept.trim_end_matches([' ', '|']))
+}
+
+/// Spell line: state, element, quality/stability — or just the status when the
+/// drawing isn't a valid spell yet ("No ring detected", "Invalid spell"...).
+pub fn headline(status: &str, valid: bool, element: Option<&str>, quality: f64, stability: f64) -> String {
+    match element {
+        Some(e) if valid => {
+            let state = status.strip_suffix(" spell").unwrap_or(status);
+            let mut name = e.to_string();
+            name[..1].make_ascii_uppercase();
+            format!("{state}: {name}  quality {:.0}%  stability {:.0}%", quality * 100.0, stability * 100.0)
+        }
+        _ => status.to_string(),
+    }
+}
+
+/// The two status-strip lines for a recognized drawing.
+pub fn spell_status(ir: &SpellIr) -> (String, String) {
+    let (_, detail) = status_lines(ir);
+    (headline(&ir.status, ir.valid, ir.element.as_deref(), ir.quality, ir.stability), detail)
+}
+
+// Status strip text box: right of the sidebar, 8px inside the strip's padding.
+const STATUS_LEFT: i32 = SIDEBAR_W + 12;
+const STATUS_WIDTH: i32 = W - STATUS_LEFT - 12;
+const SPELL_SCALE: i32 = 3;
+const DETAIL_SCALE: i32 = 2;
+pub const SPELL_LINE_CHARS: usize = ((STATUS_WIDTH - 16) / (8 * SPELL_SCALE)) as usize;
+pub const DETAIL_LINE_CHARS: usize = ((STATUS_WIDTH - 16) / (8 * DETAIL_SCALE)) as usize;
+
+/// Draws the two status lines (each truncated to fit the strip) right of the
+/// sidebar. Returns the dirty rect (x, y, w, h) for the caller to push.
 pub fn draw_status(fb: &mut Fb, line1: &str, line2: &str) -> (i32, i32, i32, i32) {
-    let left = SIDEBAR_W + 12;
-    let width = W - left - 12;
-    fb.fill_rect(left, 0, width, STATUS_H - 4, WHITE);
-    fb.text(left + 8, 10, line1, 3, BLACK);
-    fb.text(left + 8, 42, line2, 2, GRAY);
-    (left, 0, width, STATUS_H)
+    fb.fill_rect(STATUS_LEFT, 0, STATUS_WIDTH, STATUS_H - 4, WHITE);
+    fb.text(STATUS_LEFT + 8, 8, &fit(line1, SPELL_LINE_CHARS), SPELL_SCALE, BLACK);
+    fb.text(STATUS_LEFT + 8, 38, &fit(line2, DETAIL_LINE_CHARS), DETAIL_SCALE, BLACK);
+    (STATUS_LEFT, 0, STATUS_WIDTH, STATUS_H)
 }
 
 /// Sidebar + the status strip's divider: the static chrome of a fresh page.
@@ -173,6 +219,42 @@ mod tests {
         assert_eq!(slot_at(center(0).0, ICON_TOP - 1), None, "above the first icon");
         assert_eq!(slot_at(center(0).0, icon_y(SLOTS) + 10), None, "below the last icon");
         assert_eq!(slot_at(SIDEBAR_W + 50, center(0).1), None, "canvas side");
+    }
+
+    #[test]
+    fn fit_keeps_short_text_and_cuts_long_text_cleanly() {
+        assert_eq!(fit("Active: Fire", 20), "Active: Fire");
+        let long = "column 100%  force 80 spread 50 range 60 grav 20  |  ring not closed, the sigil is too close to the edge";
+        let out = fit(long, 40);
+        assert!(out.chars().count() <= 40 && out.ends_with("..."), "{out}");
+        assert!(!out.contains(" ..."), "cut back to a word boundary: {out}");
+        assert_eq!(fit("x".repeat(100).as_str(), 10).chars().count(), 10);
+    }
+
+    #[test]
+    fn headline_names_state_element_quality_and_stability() {
+        let h = headline("Prepared spell", true, Some("water"), 1.0, 1.0);
+        assert_eq!(h, "Prepared: Water  quality 100%  stability 100%");
+        assert!(h.chars().count() <= SPELL_LINE_CHARS, "worst case fits unscaled: {h}");
+        assert_eq!(headline("Active spell", true, Some("fire"), 0.8, 0.9), "Active: Fire  quality 80%  stability 90%");
+        assert_eq!(headline("No ring detected", false, None, 0.0, 0.0), "No ring detected");
+        assert_eq!(headline("Invalid spell", false, Some("fire"), 0.5, 0.5), "Invalid spell");
+    }
+
+    #[test]
+    fn status_text_stays_inside_the_strip() {
+        let mut px = vec![WHITE; (W * H) as usize];
+        let mut fb = Fb { px: &mut px };
+        let long = "m".repeat(200);
+        let (x, y, w, h) = draw_status(&mut fb, &long, &long);
+        assert!(x >= CANVAS_LEFT && x + w <= W && y == 0 && h == STATUS_H);
+        for yy in 0..H {
+            for xx in 0..W {
+                if fb.px[(yy * W + xx) as usize] != WHITE {
+                    assert!((x..x + w).contains(&xx) && yy < STATUS_H - 4, "ink outside the strip at {xx},{yy}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -30,7 +30,7 @@ use chrome::{slot_at, SIDEBAR_W, STATUS_H};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
-use spell_view::{status_lines, EffectParams};
+use spell_view::EffectParams;
 
 /// Opens the Wacom digitizer read-only and non-blocking (no EVIOCGRAB:
 /// xochitl keeps receiving the pen). None -> fall back to AppLoad's pen events.
@@ -236,7 +236,7 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
     let spell = &outcome.spell;
-    let (line1, line2) = status_lines(spell);
+    let (line1, line2) = chrome::spell_status(spell);
     draw_status(fb, client, &line1, &line2);
 
     let Some(ring) = &outcome.ring else { return };
