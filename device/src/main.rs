@@ -339,17 +339,24 @@ impl Recognizer {
 /// is untouched and the effect genuinely moves. Modifying signs shape it via
 /// `params` (reach/weight/overlay from the compiled SpellIr — spell_view.rs).
 fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
-    let pad = radius + params.reach;
-    let flush = |client: &QtfbClient, ms: u64| {
-        let _ = client.update_partial((cx - pad).max(0), (cy - pad).max(0), pad * 2, pad * 2);
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+    // Dirty rect only (clamped to screen + canvas by render). Pace on absolute
+    // deadlines so the total stays EFFECT_FRAMES x EFFECT_FRAME_MS however long
+    // a frame takes to draw. The refresh mode is NOT touched here (rm-appload
+    // sleeps 1 s per mode change).
+    let flush = |client: &QtfbClient, settle: bool, wait_until: Instant| {
+        if let Some((x, y, w, h)) = render::effect_dirty_rect(cx, cy, radius, element, params, settle) {
+            let _ = client.update_partial(x, y, w, h);
+        }
+        std::thread::sleep(wait_until.saturating_duration_since(Instant::now()));
     };
+    let start = Instant::now();
+    let tick = std::time::Duration::from_millis(render::EFFECT_FRAME_MS);
     for f in 0..EFFECT_FRAMES {
         effect_frame(fb, cx, cy, radius, element, f, params);
-        flush(client, 80);
+        flush(client, false, start + tick * (f as u32 + 1));
     }
     effect_settle(fb, cx, cy, radius, element, params);
-    flush(client, 60);
+    flush(client, true, Instant::now() + std::time::Duration::from_millis(60));
     // The fast waveform leaves every frame's ghost behind (seen on the RM2
     // after a Fire Shoot: flame tongues and pillar outlines on a clean
     // buffer); one full-quality refresh wipes them.
