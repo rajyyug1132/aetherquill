@@ -61,9 +61,17 @@ impl Session {
         id
     }
 
+    /// An empty page has cast nothing: the same spell drawn again must cast.
+    fn forget_cast_if_empty(&mut self) {
+        if self.strokes.is_empty() {
+            self.last_activation.clear();
+        }
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(s) = self.strokes.pop() else { return false };
         self.redo.push(s);
+        self.forget_cast_if_empty();
         true
     }
 
@@ -77,6 +85,7 @@ impl Session {
     /// stroke first and the page comes back in drawing order.
     pub fn clear(&mut self) {
         self.redo.extend(self.strokes.drain(..).rev());
+        self.forget_cast_if_empty();
     }
 
     /// Eraser: delete the first stroke with a point within ERASE_RADIUS of (x, y).
@@ -86,6 +95,7 @@ impl Session {
         };
         let s = self.strokes.remove(idx);
         self.redo.push(s);
+        self.forget_cast_if_empty();
         true
     }
 
