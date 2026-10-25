@@ -7,5 +7,6 @@ pub mod lag;
 pub mod pen;
 pub mod render;
 pub mod resume;
+pub mod session;
 pub mod shapes;
 pub mod spell_view;
