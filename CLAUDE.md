@@ -93,6 +93,20 @@ light) + modifying signs and shows the spell activating on the e-ink screen.
   math) may land as a fast-follow within the same effort, not indefinitely
   deferred — don't let it silently slip.
 
+## Hard rules for agent sessions (added 2026-10-25)
+
+- KILL: SSH, scp or any deploy to the reMarkable — device phases are
+  HUMAN-gated (LOOP.md hard stops).
+- KILL: edits under `service/vendor/wha/` — it's the parity ground truth.
+- KILL: force-push, amending pushed commits, secrets in git — shared repo,
+  keys live in env vars only.
+- KILL: anything deployed outside `/home/root` — that's the project's safety
+  property; rollback = `rm -rf` + reboot.
+- Cloud session is Linux; the Windows MSVC incantation in LOOP.md is for
+  Yyug's machine only.
+- Enforced in `.claude/settings.json` (permissions.deny + a Stop hook that
+  runs both test suites).
+
 ## Stale from the original plan (kept for historical context only)
 
 - The original README/scripts describe a tethered Node oracle over TCP.

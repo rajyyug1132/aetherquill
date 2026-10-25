@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Edit(./service/vendor/wha/**)",
+      "Bash(git push --force *)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(cd recognizer && cargo test -q) && (cd device && cargo test --lib -q) || exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}
