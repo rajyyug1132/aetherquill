@@ -7,6 +7,7 @@
 //! particle renderer isn't vendored, so there's nothing to port it from.
 //!   range        -> how far the effect reaches past the seal
 //!   force        -> line weight
+//!   spread       -> how wide the sign overlay fans out
 //!   manifestation-> overlay: column = pillar along `direction`,
 //!                   levitation = rising chevrons lifted by (1 - gravity),
 //!                   convergence = spokes aimed at the convergence point,
@@ -18,6 +19,8 @@ use crate::render::EFFECT_REACH;
 
 /// Upper bound on `EffectParams::reach`, for sizing the refresh box.
 pub const EFFECT_REACH_MAX: i32 = 190;
+/// Status detail line: scale-2 font (16px/char) in the 1262px status strip.
+pub const STATUS_DETAIL_MAX_CHARS: usize = 78;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
@@ -38,13 +41,15 @@ pub struct EffectParams {
     pub weight: i32,
     /// Primary manifestation strength 0..1 (1 for aura).
     pub strength: f64,
+    /// Upstream spread 0..1: widens the overlay.
+    pub spread: f64,
     pub overlay: Overlay,
 }
 
 impl EffectParams {
     /// Baseline: no signs, compiler defaults — draws exactly the pre-sign effect.
     pub fn aura() -> Self {
-        EffectParams { reach: EFFECT_REACH, weight: 0, strength: 1.0, overlay: Overlay::Aura }
+        EffectParams { reach: EFFECT_REACH, weight: 0, strength: 1.0, spread: 0.5, overlay: Overlay::Aura }
     }
 
     pub fn from_ir(ir: &SpellIr) -> Self {
@@ -67,7 +72,7 @@ impl EffectParams {
             },
             _ => Overlay::Aura,
         };
-        EffectParams { reach, weight, strength, overlay }
+        EffectParams { reach, weight, strength, spread: ir.spread.clamp(0.0, 1.0), overlay }
     }
 }
 
@@ -94,7 +99,11 @@ pub fn status_lines(ir: &SpellIr) -> (String, String) {
     if let Some(w) = ir.warnings.first() {
         parts.push(w.as_str().to_string());
     }
-    (line1, parts.join("  |  "))
+    let mut line2 = parts.join("  |  ");
+    if line2.chars().count() > STATUS_DETAIL_MAX_CHARS {
+        line2 = line2.chars().take(STATUS_DETAIL_MAX_CHARS - 3).collect::<String>() + "...";
+    }
+    (line1, line2)
 }
 
 #[cfg(test)]
@@ -206,6 +215,22 @@ mod tests {
             }
             assert!(added > 200, "{name}: overlay added only {added} px");
         }
+    }
+
+    #[test]
+    fn detail_line_fits_the_status_strip() {
+        let mut ir = fixture_ir("signs.json", "ring-fire-levitation-placed");
+        ir.warnings.push(recognizer::glyph_warnings::GlyphWarning::UnsupportedMultipleSigils);
+        ir.warnings.rotate_right(1);
+        let (_, line2) = status_lines(&ir);
+        assert!(line2.chars().count() <= STATUS_DETAIL_MAX_CHARS, "{} chars: {line2}", line2.chars().count());
+        assert!(line2.ends_with("..."));
+    }
+
+    #[test]
+    fn spread_comes_from_the_ir() {
+        let ir = fixture_ir("signs.json", "ring-fire-convergence-placed");
+        assert_eq!(EffectParams::from_ir(&ir).spread, ir.spread);
     }
 
     #[test]

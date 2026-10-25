@@ -250,7 +250,7 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
         Overlay::Column { dir: (dx, dy) } => {
             let len = reach * (0.5 + 0.5 * params.strength) * grow;
             let (nx, ny) = (-dy, dx);
-            let half = radius as f64 * 0.35;
+            let half = radius as f64 * (0.2 + 0.3 * params.spread);
             for side in [-1.0, 1.0] {
                 let (ox, oy) = (nx * half * side, ny * half * side);
                 let start = (cx as f64 + dx * r0 + ox, cy as f64 + dy * r0 + oy);
@@ -274,7 +274,7 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
                 if y < (cy - radius) as f64 - reach {
                     break;
                 }
-                let half = 26.0 - k as f64 * 3.0;
+                let half = 16.0 + 24.0 * params.spread - k as f64 * 3.0;
                 let (x, y) = (cx, y as i32);
                 fb.line(x - half as i32, y + 12, x, y, 2 + w, BLACK);
                 fb.line(x, y, x + half as i32, y + 12, 2 + w, BLACK);
@@ -285,9 +285,12 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
         Overlay::Convergence { point: (px, py), rigidity } => {
             let target = (cx as f64 + px * radius as f64, cy as f64 + py * radius as f64);
             let spokes = 6 + (rigidity * 10.0).round() as i32;
-            let tau = std::f64::consts::TAU;
+            // Spokes fan over an arc around the side facing the point; full
+            // circle at spread 1.
+            let facing = py.atan2(px);
+            let arc = std::f64::consts::TAU * (0.4 + 0.6 * params.spread);
             for i in 0..spokes {
-                let a = tau * i as f64 / spokes as f64;
+                let a = facing - arc / 2.0 + arc * (i as f64 + 0.5) / spokes as f64;
                 let outer = (cx as f64 + a.cos() * (r0 + reach * 0.9), cy as f64 + a.sin() * (r0 + reach * 0.9));
                 let (vx, vy) = (target.0 - outer.0, target.1 - outer.1);
                 let dist = vx.hypot(vy);

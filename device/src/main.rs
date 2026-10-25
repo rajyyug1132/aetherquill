@@ -24,12 +24,21 @@ use recognizer::stroke_cleaner::RawStroke;
 mod grimoire;
 mod qtfb;
 mod render;
+mod resume;
 mod shapes;
 mod spell_view;
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
 use spell_view::{status_lines, EffectParams};
+
+/// Seconds on a Linux clock (BOOTTIME keeps counting through suspend,
+/// MONOTONIC doesn't — resume.rs compares the two).
+fn clock_s(clock: libc::clockid_t) -> f64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(clock, &mut ts) };
+    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+}
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -304,12 +313,27 @@ fn main() {
     // Touch arrives as a stream of PRESS events per contact — debounce chrome
     // buttons so one tap doesn't fire dozens of times.
     let mut last_chrome_tap = Instant::now() - std::time::Duration::from_secs(1);
+    // Suspend/resume: redraw from the stroke store instead of trusting the panel.
+    let mut resume = resume::ResumeDetector::default();
 
     loop {
         // Block until the socket is readable (input or disconnect).
         let mut pfd = libc::pollfd { fd: client.raw_fd(), events: libc::POLLIN, revents: 0 };
         // 20ms timeout keeps the coalesced-refresh flush timely mid-stroke.
         unsafe { libc::poll(&mut pfd, 1, 20) };
+
+        if resume.observe(clock_s(libc::CLOCK_BOOTTIME), clock_s(libc::CLOCK_MONOTONIC)) {
+            eprintln!("resume detected — redrawing from {} strokes", strokes.len());
+            // A stroke cut off by the nap is unreliable: drop it.
+            pen_down = false;
+            current.clear();
+            dirty_rect = None;
+            moving = None;
+            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            // Restores the status line; the signature is unchanged, so no replay.
+            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
+            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+        }
 
         let events = match client.drain_events() {
             Ok(events) => events,
