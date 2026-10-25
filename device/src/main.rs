@@ -52,6 +52,10 @@ const MIN_STROKE_LEN: f64 = 7.0 / CANVAS_SCALE;
 
 const INK_W: i32 = 3;
 
+/// Coalesced ink refresh interval. Per-segment updates (~200Hz pen) flood the
+/// qtfb socket; 40ms (25Hz) was the first safe value, 16ms (~60Hz) the current.
+const INK_FLUSH_MS: u128 = 16;
+
 struct ScreenStroke {
     id: String,
     points: Vec<(f64, f64)>,
@@ -151,19 +155,6 @@ fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     let y = icon_y(4);
     fb.line(ICON_X + 26, y + 24, ICON_X + 58, y + 56, 3, fg);
     fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
-}
-
-/// Live ink renders with the fast (1-bit) waveform while the pen is down;
-/// everything else (gray UI, status text, ring snap, effects) uses AppLoad's
-/// default UI waveform. Pending ink is flushed before switching back so the
-/// last segments still land fast.
-fn set_ink_mode(client: &QtfbClient, fast: bool, dirty_rect: &mut Option<(i32, i32, i32, i32)>) {
-    if !fast {
-        if let Some((x0, y0, x1, y1)) = dirty_rect.take() {
-            let _ = client.update_partial(x0.max(0), y0.max(0), x1 - x0, y1 - y0);
-        }
-    }
-    let _ = client.set_refresh_mode(if fast { qtfb::REFRESH_MODE_UFAST } else { qtfb::REFRESH_MODE_UI });
 }
 
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
@@ -281,6 +272,11 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Fast waveform for the whole session. Set ONCE: rm-appload v0.5.3's
+    // server thread sleeps 1s after every MESSAGE_SET_REFRESH_MODE
+    // (fbmanagement.cpp safetyWaitForEventLoopToCatchUp), stalling all our
+    // updates — toggling it per stroke froze the start of every stroke.
+    let _ = client.set_refresh_mode(qtfb::REFRESH_MODE_UFAST);
     let dictionary = load_dictionary();
 
     // Owned pixel view for the lifetime of the app (single-threaded).
@@ -302,7 +298,7 @@ fn main() {
     let mut last_activation = String::new();
     let mut dirty_since = Instant::now();
     // Coalesced refresh: ink lands in shm per-segment, but e-ink update
-    // requests flush at most every 40ms — per-segment update_partial floods
+    // requests flush at most every INK_FLUSH_MS — per-segment update_partial floods
     // the qtfb socket, lags the panel, and drops input events.
     let mut dirty_rect: Option<(i32, i32, i32, i32)> = None; // x0,y0,x1,y1
     let mut last_flush = Instant::now();
@@ -332,15 +328,16 @@ fn main() {
     loop {
         // Block until the socket is readable (input or disconnect).
         let mut pfd = libc::pollfd { fd: client.raw_fd(), events: libc::POLLIN, revents: 0 };
-        // 20ms timeout keeps the coalesced-refresh flush timely mid-stroke.
-        unsafe { libc::poll(&mut pfd, 1, 20) };
+        // With ink pending, wake exactly at the flush deadline; else 20ms.
+        let timeout = match dirty_rect {
+            Some(_) => INK_FLUSH_MS.saturating_sub(last_flush.elapsed().as_millis()) as i32,
+            None => 20,
+        };
+        unsafe { libc::poll(&mut pfd, 1, timeout) };
 
         if resume.observe(clock_s(libc::CLOCK_BOOTTIME), clock_s(libc::CLOCK_MONOTONIC)) {
             eprintln!("resume detected — redrawing from {} strokes", strokes.len());
             // A stroke cut off by the nap is unreliable: drop it.
-            if pen_down {
-                set_ink_mode(&client, false, &mut dirty_rect);
-            }
             pen_down = false;
             current.clear();
             dirty_rect = None;
@@ -382,7 +379,6 @@ fn main() {
                     }
                     if !pen_down {
                         pen_down = true;
-                        set_ink_mode(&client, true, &mut dirty_rect);
                         hold_snapped = false;
                         current = vec![(x, y)];
                         eprintln!("pen down at {x},{y}");
@@ -419,7 +415,6 @@ fn main() {
                         continue;
                     }
                     pen_down = false;
-                    set_ink_mode(&client, false, &mut dirty_rect);
                     let points = std::mem::take(&mut current);
                     if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                         strokes.push(ScreenStroke { id: format!("s{next_id}"), points });
@@ -513,9 +508,9 @@ fn main() {
             }
         }
 
-        // Flush coalesced ink refreshes at ~25Hz.
+        // Flush coalesced ink refreshes every INK_FLUSH_MS.
         if let Some((x0, y0, x1, y1)) = dirty_rect {
-            if last_flush.elapsed().as_millis() >= 40 || !pen_down {
+            if last_flush.elapsed().as_millis() >= INK_FLUSH_MS || !pen_down {
                 let _ = client.update_partial(x0.max(0), y0.max(0), x1 - x0, y1 - y0);
                 dirty_rect = None;
                 last_flush = Instant::now();
@@ -538,14 +533,12 @@ fn main() {
             hold_snapped = true;
             if let Some(snapped) = snap_stroke(&current) {
                 current = snapped;
-                // Full repaint includes gray UI: render it with the UI waveform.
-                set_ink_mode(&client, false, &mut dirty_rect);
                 redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                 for w in current.windows(2) {
                     fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                 }
                 let _ = client.update_all();
-                set_ink_mode(&client, true, &mut dirty_rect);
+                dirty_rect = None;
             }
         }
 
@@ -554,7 +547,6 @@ fn main() {
         // held still keeps trickling events and belongs to hold-to-snap.
         if pen_down && last_pen_event.elapsed().as_millis() > 600 {
             pen_down = false;
-            set_ink_mode(&client, false, &mut dirty_rect);
             let points = std::mem::take(&mut current);
             if points.len() >= 2 && path_length(&points) >= MIN_STROKE_LEN {
                 strokes.push(ScreenStroke { id: format!("s{next_id}"), points });

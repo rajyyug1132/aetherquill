@@ -8,16 +8,16 @@ rollback section.
 **Before you start:** RM2 on OS 3.27.x (Settings → About; 3.27.3.0 is the one
 the stack was checked against). It's connected over USB, `ssh root@10.11.99.1`
 works, and the Vellum stack (xovi + xovi-extensions + appload) is installed
-(README step 1). You have the bundle `aetherquill-0.3.1.tar.gz`, from the
-GitHub release or from `bash scripts/make-bundle.sh 0.3.1`.
+(README step 1). You have the bundle `aetherquill-0.3.2.tar.gz`, from the
+GitHub release or from `bash scripts/make-bundle.sh 0.3.2`.
 
 ## 1. Install
 
 | # | Do | Expect | ✓/✗ | Notes |
 |---|---|---|---|---|
 | 1.1 | `ssh root@10.11.99.1 "df -h /home"` | several GB free | | |
-| 1.2 | `scp aetherquill-0.3.1.tar.gz root@10.11.99.1:/home/root/` | copies, no error | | |
-| 1.3 | `ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.1.tar.gz && sh aetherquill-0.3.1/install.sh"` | prints `installed to /home/root/xovi/exthome/appload/aetherquill` | | |
+| 1.2 | `scp aetherquill-0.3.2.tar.gz root@10.11.99.1:/home/root/` | copies, no error | | |
+| 1.3 | `ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.2.tar.gz && sh aetherquill-0.3.2/install.sh"` | prints `installed to /home/root/xovi/exthome/appload/aetherquill` | | |
 | 1.4 | `ssh root@10.11.99.1 "ls -l /home/root/xovi/exthome/appload/aetherquill /home/root/wha"` | `aetherquill` (rwx) + manifest; `start-xovi.sh` + `spells/` | | |
 | 1.5 | `ssh root@10.11.99.1 /home/root/wha/start-xovi.sh` | "already loaded", or the screen flickers and xochitl comes back | | |
 | 1.6 | Open AppLoad in the tablet UI | "Aetherquill" is listed | | |
@@ -67,10 +67,10 @@ placement upstream recognizes reliably. Close the ring last.
 | # | Do | Expect | ✓/✗ | Notes |
 |---|---|---|---|---|
 | 5.1 | close Aetherquill from AppLoad | stock UI, notebooks untouched | | |
-| 5.2 | `ssh root@10.11.99.1 "sh /home/root/aetherquill-0.3.1/install.sh --uninstall"` | `removed ... /home/root/wha` | | |
+| 5.2 | `ssh root@10.11.99.1 "sh /home/root/aetherquill-0.3.2/install.sh --uninstall"` | `removed ... /home/root/wha` | | |
 | 5.3 | `ssh root@10.11.99.1 "ls /home/root/xovi/exthome/appload/; ls /home/root/wha"` | no `aetherquill` dir; `/home/root/wha` gone | | |
 | 5.4 | reboot | stock tablet; AppLoad no longer lists Aetherquill | | |
-| 5.5 | `ssh root@10.11.99.1 "rm -rf /home/root/aetherquill-0.3.1 /home/root/aetherquill-0.3.1.tar.gz"` | bundle leftovers gone | | |
+| 5.5 | `ssh root@10.11.99.1 "rm -rf /home/root/aetherquill-0.3.2 /home/root/aetherquill-0.3.2.tar.gz"` | bundle leftovers gone | | |
 | 5.6 | re-install (step 1.3) if you're keeping it | — | | |
 
 Full stack rollback, including xovi/Vellum: `rm -rf /home/root/.vellum /home/root/xovi` + reboot (README step 1).
