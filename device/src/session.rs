@@ -139,3 +139,122 @@ impl Session {
         changed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(x: f64, y: f64) -> Vec<(f64, f64)> {
+        vec![(x, y), (x + 30.0, y)]
+    }
+
+    fn ids(v: &[ScreenStroke]) -> Vec<&str> {
+        v.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn ring_over(ids: &[&str]) -> Ring {
+        Ring { found: true, complete: true, stroke_ids: ids.iter().map(|s| s.to_string()).collect(), ..Ring::default() }
+    }
+
+    // README Controls: "Pick a ready-made spell ... Undo removes it".
+    #[test]
+    fn catalogue_pick_is_one_undo_step() {
+        let mut s = Session::new();
+        s.pick_catalogue(vec![seg(200.0, 200.0), seg(200.0, 300.0), seg(200.0, 400.0)]);
+        assert_eq!(s.strokes.len(), 3);
+        assert!(s.undo());
+        assert!(s.strokes.is_empty(), "one Undo must remove the whole spell, left {:?}", ids(&s.strokes));
+        assert!(s.redo());
+        assert_eq!(ids(&s.strokes), ["s1", "s2", "s3"]);
+
+        // A stroke drawn after the pick is its own undo step.
+        s.commit(seg(200.0, 600.0));
+        assert!(s.undo());
+        assert_eq!(s.strokes.len(), 3);
+        assert!(s.undo());
+        assert!(s.strokes.is_empty());
+    }
+
+    // README: "Erasing and clearing can be undone too".
+    #[test]
+    fn clear_then_redo_restores_the_page_in_drawing_order() {
+        let mut s = Session::new();
+        for y in [200.0, 300.0, 400.0] {
+            s.commit(seg(200.0, y));
+        }
+        s.clear();
+        assert!(s.strokes.is_empty());
+        while s.strokes.len() < 3 {
+            assert!(s.redo());
+        }
+        assert_eq!(ids(&s.strokes), ["s1", "s2", "s3"], "redo after CLEAR restored the strokes reversed");
+        assert!(s.undo());
+        assert_eq!(ids(&s.strokes), ["s1", "s2"], "Undo must remove the last-drawn stroke");
+    }
+
+    // README: "Each cast is appended to log.jsonl": an empty page has cast
+    // nothing, so drawing the same spell again is a new cast.
+    #[test]
+    fn emptying_the_page_forgets_the_last_activation() {
+        for how in 0..3 {
+            let mut s = Session::new();
+            s.commit(seg(200.0, 200.0));
+            s.last_activation = "sig".into();
+            match how {
+                0 => s.clear(),
+                1 => {
+                    s.undo();
+                }
+                _ => {
+                    s.erase_at(210.0, 200.0);
+                }
+            }
+            assert!(s.strokes.is_empty());
+            assert!(s.last_activation.is_empty(), "case {how}: drawing the same spell again would not cast");
+        }
+        // Still something on the page: the spell is still the one that cast.
+        let mut s = Session::new();
+        s.commit(seg(200.0, 200.0));
+        s.commit(seg(200.0, 300.0));
+        s.last_activation = "sig".into();
+        s.undo();
+        assert_eq!(s.last_activation, "sig");
+    }
+
+    // README: "One-finger drag on a stroke | Move it". The finger keeps the
+    // stroke it grabbed even if an undo/erase from a second finger shifts the list.
+    #[test]
+    fn a_grabbed_stroke_is_the_one_that_moves_after_the_page_changes() {
+        let mut s = Session::new();
+        for y in [200.0, 500.0, 800.0] {
+            s.commit(seg(200.0, y));
+        }
+        let grab = s.grab_at(210.0, 500.0).unwrap();
+        assert!(s.erase_at(210.0, 200.0));
+        s.move_stroke(grab, 7.0, 0.0);
+        let x_of = |s: &Session, id: &str| s.strokes.iter().find(|t| t.id == id).unwrap().points[0].0;
+        assert_eq!(x_of(&s, "s2"), 207.0, "the grabbed stroke did not move");
+        assert_eq!(x_of(&s, "s3"), 200.0, "a different stroke moved instead");
+    }
+
+    // README: "Close a ring | It snaps to a perfect circle" - and a dragged
+    // ring stroke must be seen moving, not hidden behind the stale circle.
+    #[test]
+    fn dragging_a_ring_stroke_unsnaps_the_ring_but_other_strokes_do_not() {
+        let mut s = Session::new();
+        for y in [200.0, 300.0, 600.0] {
+            s.commit(seg(200.0, y));
+        }
+        assert!(s.apply_ring(Some(ring_over(&["s1", "s2"]))));
+        assert_eq!(s.snapped_ring_ids, ["s1", "s2"]);
+
+        let sigil = s.grab_at(210.0, 600.0).unwrap();
+        s.move_stroke(sigil, 5.0, 0.0);
+        assert_eq!(s.snapped_ids(), ["s1", "s2"], "moving the sigil leaves the ring alone");
+
+        let ring_stroke = s.grab_at(210.0, 200.0).unwrap();
+        s.move_stroke(ring_stroke, 5.0, 0.0);
+        assert!(s.snapped_ids().is_empty(), "the snapped circle would stay put while its stroke moves");
+        assert!(s.snapped_ring_ids.is_empty());
+    }
+}
