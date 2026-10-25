@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 
+use crate::chrome::fit;
 use crate::render::{Fb, BLACK, GRAY, WHITE};
 
 /// Screen px -> web-canvas px, so the vendored CONFIG's pixel-tuned
@@ -51,16 +52,40 @@ pub const PANEL_Y: i32 = 88;
 pub const PANEL_W: i32 = 1404 - PANEL_X - 24;
 const TITLE_H: i32 = 90;
 const ROW_H: i32 = 130;
+/// Spells per page: a long catalogue is paged, not squeezed or scrolled.
+pub const ROWS_PER_PAGE: usize = 6;
+/// Prev/next buttons (only drawn and hit-testable when there is more than one page).
+pub const NAV_W: i32 = 300;
+pub const NAV_H: i32 = 130;
+const NAV_GAP: i32 = 10; // rows -> buttons
 
 pub fn panel_h(rows: usize) -> i32 {
     TITLE_H + rows as i32 * ROW_H + 20
+}
+
+pub fn page_count(total: usize) -> usize {
+    total.div_ceil(ROWS_PER_PAGE).max(1)
+}
+
+/// Global spell indices shown on `page` (clamped to the last page).
+pub fn page_range(total: usize, page: usize) -> std::ops::Range<usize> {
+    let start = (page.min(page_count(total) - 1) * ROWS_PER_PAGE).min(total);
+    start..(start + ROWS_PER_PAGE).min(total)
+}
+
+/// Panel height for a catalogue of `total` spells. Constant across pages, so
+/// turning a page repaints exactly the area the previous page covered.
+pub fn panel_h_for(total: usize) -> i32 {
+    let nav = if page_count(total) > 1 { NAV_GAP + NAV_H } else { 0 };
+    panel_h(total.min(ROWS_PER_PAGE)) + nav
 }
 
 fn row_y(i: usize) -> i32 {
     PANEL_Y + TITLE_H + i as i32 * ROW_H
 }
 
-/// Which catalogue row a tap at (x, y) lands on.
+/// Which catalogue row a tap at (x, y) lands on, among `rows` rows shown on
+/// the current page (page-local index; see `spell_at` for the global one).
 pub fn row_at(x: i32, y: i32, rows: usize) -> Option<usize> {
     if !(PANEL_X..PANEL_X + PANEL_W).contains(&x) || y < row_y(0) {
         return None;
@@ -69,16 +94,186 @@ pub fn row_at(x: i32, y: i32, rows: usize) -> Option<usize> {
     (i < rows).then_some(i)
 }
 
-pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell]) {
-    let h = panel_h(spells.len());
+/// Global catalogue index of the spell a tap lands on, on `page` of `total`.
+pub fn spell_at(x: i32, y: i32, total: usize, page: usize) -> Option<usize> {
+    let range = page_range(total, page);
+    row_at(x, y, range.len()).map(|i| range.start + i)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Prev,
+    Next,
+}
+
+fn nav_y(total: usize) -> i32 {
+    PANEL_Y + panel_h(total.min(ROWS_PER_PAGE)) - 20 + NAV_GAP
+}
+
+fn nav_x(nav: Nav) -> i32 {
+    match nav {
+        Nav::Prev => PANEL_X + 28,
+        Nav::Next => PANEL_X + PANEL_W - 28 - NAV_W,
+    }
+}
+
+/// Which page button a tap lands on. None with a single page. A button at the
+/// end of the range still hits (and `turn` leaves the page alone), so a tap
+/// on a greyed-out button doesn't fall through and close the panel.
+pub fn nav_at(x: i32, y: i32, total: usize) -> Option<Nav> {
+    if page_count(total) < 2 || !(nav_y(total)..nav_y(total) + NAV_H).contains(&y) {
+        return None;
+    }
+    [Nav::Prev, Nav::Next].into_iter().find(|&n| (nav_x(n)..nav_x(n) + NAV_W).contains(&x))
+}
+
+/// The page after tapping `nav`, clamped to the catalogue.
+pub fn turn(page: usize, nav: Nav, total: usize) -> usize {
+    match nav {
+        Nav::Prev => page.saturating_sub(1),
+        Nav::Next => (page + 1).min(page_count(total) - 1),
+    }
+}
+
+fn draw_nav_button(fb: &mut Fb, total: usize, nav: Nav, enabled: bool) {
+    let (x, y) = (nav_x(nav), nav_y(total));
+    let c = if enabled { BLACK } else { GRAY };
+    fb.rect_outline(x, y, NAV_W, NAV_H, if enabled { 4 } else { 2 }, c);
+    let label = if nav == Nav::Prev { "< PREV" } else { "NEXT >" };
+    let w = label.len() as i32 * 32;
+    fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, c);
+}
+
+pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
+    let total = spells.len();
+    let page = page.min(page_count(total) - 1);
+    let h = panel_h_for(total);
     fb.fill_rect(PANEL_X, PANEL_Y, PANEL_W, h, WHITE);
     fb.rect_outline(PANEL_X, PANEL_Y, PANEL_W, h, 3, BLACK);
     fb.text(PANEL_X + 28, PANEL_Y + 30, "Spell Catalogue", 4, BLACK);
-    for (i, spell) in spells.iter().enumerate() {
+    let name_chars = ((PANEL_W - 56) / 24) as usize;
+    let line_chars = ((PANEL_W - 56) / 16) as usize;
+    for (i, spell) in spells[page_range(total, page)].iter().enumerate() {
         let y = row_y(i);
         fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 2, GRAY);
-        fb.text(PANEL_X + 28, y + 26, &spell.name, 3, BLACK);
-        fb.text(PANEL_X + 28, y + 74, &spell.line, 2, GRAY);
+        fb.text(PANEL_X + 28, y + 26, &fit(&spell.name, name_chars), 3, BLACK);
+        fb.text(PANEL_X + 28, y + 74, &fit(&spell.line, line_chars), 2, GRAY);
+    }
+    if page_count(total) > 1 {
+        draw_nav_button(fb, total, Nav::Prev, page > 0);
+        draw_nav_button(fb, total, Nav::Next, page + 1 < page_count(total));
+        let label = format!("Page {}/{}", page + 1, page_count(total));
+        let w = label.len() as i32 * 24;
+        fb.text(PANEL_X + (PANEL_W - w) / 2, nav_y(total) + (NAV_H - 24) / 2, &label, 3, BLACK);
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+    use crate::render::{H, W};
+
+    fn dummy(n: usize) -> Vec<CatalogueSpell> {
+        (0..n)
+            .map(|i| CatalogueSpell {
+                id: format!("dummy-{i}"),
+                name: format!("Dummy Spell {}", i + 1),
+                line: "x".repeat(200), // longer than any row: must be truncated, not overflow
+                strokes: vec![],
+                expected: Expected { status: String::new(), element: String::new(), primary_manifestation: String::new(), signs: vec![], signature: String::new() },
+            })
+            .collect()
+    }
+
+    fn row_center(i: usize) -> (i32, i32) {
+        (PANEL_X + PANEL_W / 2, row_y(i) + ROW_H / 2)
+    }
+
+    #[test]
+    fn pages_split_the_catalogue() {
+        assert_eq!((page_count(0), page_count(4), page_count(6), page_count(7), page_count(12)), (1, 1, 1, 2, 2));
+        assert_eq!(page_range(12, 0), 0..6);
+        assert_eq!(page_range(12, 1), 6..12);
+        assert_eq!(page_range(4, 0), 0..4);
+        assert_eq!(page_range(10, 1), 6..10);
+        assert_eq!(page_range(12, 9), 6..12, "past-the-end page clamps to the last");
+        assert_eq!(page_range(0, 0), 0..0);
+    }
+
+    #[test]
+    fn row_taps_are_page_aware_and_global() {
+        let (x, y0) = row_center(0);
+        assert_eq!(spell_at(x, y0, 12, 0), Some(0));
+        assert_eq!(spell_at(x, y0, 12, 1), Some(6));
+        let (x, y5) = row_center(5);
+        assert_eq!(spell_at(x, y5, 12, 0), Some(5));
+        assert_eq!(spell_at(x, y5, 12, 1), Some(11));
+        // Short last page: rows past its end are not rows.
+        let (x, y3) = row_center(3);
+        assert_eq!(spell_at(x, y3, 10, 1), Some(9));
+        assert_eq!(spell_at(x, row_center(4).1, 10, 1), None);
+        assert_eq!(spell_at(x, y3, 10, 0), Some(3));
+        assert_eq!(spell_at(PANEL_X - 1, y0, 12, 0), None);
+        assert_eq!(spell_at(x, PANEL_Y + 10, 12, 0), None, "title is not a row");
+        // Single page behaves like the old row_at.
+        assert_eq!(spell_at(x, y3, 4, 0), Some(3));
+    }
+
+    #[test]
+    fn nav_buttons_exist_only_when_paged_and_are_big_enough() {
+        assert_eq!(nav_at(PANEL_X + 40, nav_y(4) + 10, 4), None);
+        for (nav, total) in [(Nav::Prev, 12), (Nav::Next, 12), (Nav::Prev, 7), (Nav::Next, 7)] {
+            let (x0, y0) = (nav_x(nav), nav_y(total));
+            let hits = |x: i32, y: i32| nav_at(x, y, total) == Some(nav);
+            assert!(hits(x0, y0) && hits(x0 + NAV_W - 1, y0 + NAV_H - 1), "{nav:?} corners");
+            assert!(!hits(x0 - 1, y0) && !hits(x0 + NAV_W, y0) && !hits(x0, y0 - 1) && !hits(x0, y0 + NAV_H), "{nav:?} edges");
+            assert!(NAV_W >= 130 && NAV_H >= 130);
+        }
+        assert!(ROW_H >= 130 && PANEL_W >= 130, "row hit boxes");
+        assert_eq!(nav_at(PANEL_X + PANEL_W / 2, nav_y(12) + 10, 12), None, "page label between the buttons is not a button");
+    }
+
+    #[test]
+    fn turning_pages_clamps_at_both_ends() {
+        assert_eq!(turn(0, Nav::Next, 12), 1);
+        assert_eq!(turn(1, Nav::Next, 12), 1);
+        assert_eq!(turn(1, Nav::Prev, 12), 0);
+        assert_eq!(turn(0, Nav::Prev, 12), 0);
+        assert_eq!(turn(0, Nav::Next, 4), 0);
+    }
+
+    #[test]
+    fn the_panel_fits_the_screen_and_buttons_sit_inside_it() {
+        for total in [0, 4, 6, 7, 12] {
+            let bottom = PANEL_Y + panel_h_for(total);
+            assert!(bottom <= H - 24, "{total} spells: panel bottom {bottom}");
+            if page_count(total) > 1 {
+                assert!(nav_y(total) + NAV_H < bottom, "buttons inside the frame");
+                assert!(nav_y(total) >= row_y(ROWS_PER_PAGE), "buttons below the last row");
+            }
+        }
+        assert_eq!(panel_h_for(4), panel_h(4), "no paging chrome for a short catalogue");
+    }
+
+    #[test]
+    fn drawing_every_page_stays_inside_the_panel_frame() {
+        for (total, page) in [(4, 0), (12, 0), (12, 1), (7, 1)] {
+            let spells = dummy(total);
+            let mut px = vec![WHITE; (W * H) as usize];
+            let mut fb = Fb { px: &mut px };
+            draw_panel(&mut fb, &spells, page);
+            let (x1, y1) = (PANEL_X + PANEL_W, PANEL_Y + panel_h_for(total));
+            let mut ink = 0;
+            for yy in 0..H {
+                for xx in 0..W {
+                    if fb.px[(yy * W + xx) as usize] != WHITE {
+                        ink += 1;
+                        assert!((PANEL_X..x1).contains(&xx) && (PANEL_Y..y1).contains(&yy), "{total} spells page {page}: ink outside at {xx},{yy}");
+                    }
+                }
+            }
+            assert!(ink > 1000);
+        }
     }
 }
 

@@ -342,6 +342,7 @@ fn main() {
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
     let mut catalogue_open = false;
+    let mut catalogue_page = 0usize;
     // After a catalogue pick, the same finger's queued touch events must not
     // drag the freshly inked strokes: ignore canvas touch until it lifts.
     let mut touch_until_lift_ignored = false;
@@ -558,8 +559,14 @@ fn main() {
                             continue;
                         }
                         last_chrome_tap = Instant::now();
+                        if let Some(nav) = catalogue::nav_at(event.x, event.y, spell_catalogue.len()) {
+                            catalogue_page = catalogue::turn(catalogue_page, nav, spell_catalogue.len());
+                            catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
+                            let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                            continue;
+                        }
                         catalogue_open = false;
-                        let Some(i) = catalogue::row_at(event.x, event.y, spell_catalogue.len()) else {
+                        let Some(i) = catalogue::spell_at(event.x, event.y, spell_catalogue.len(), catalogue_page) else {
                             redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                             continue;
                         };
@@ -657,8 +664,9 @@ fn main() {
                         Some(5) => {
                             catalogue_open = !catalogue_open;
                             if catalogue_open {
-                                catalogue::draw_panel(&mut fb, &spell_catalogue);
-                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h(spell_catalogue.len()));
+                                catalogue_page = 0;
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
                             } else {
                                 redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
                             }
