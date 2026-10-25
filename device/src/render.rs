@@ -33,13 +33,11 @@ fn progress(f: i32) -> f64 {
 /// How far past the seal radius the effect reaches.
 pub const EFFECT_REACH: i32 = 120;
 
-/// Left edge of the drawable canvas for effects. Mirrors main.rs
-/// `SIDEBAR_W + 2` (110 px sidebar + its 2 px gray edge): effects must never
-/// paint over the sidebar. Keep in sync with main.rs.
-pub const CANVAS_LEFT: i32 = 112;
-/// Top edge of the drawable canvas for effects. Mirrors main.rs `STATUS_H`
-/// (the status strip). Keep in sync with main.rs.
-pub const CANVAS_TOP: i32 = 64;
+/// Left edge of the drawable canvas for effects: the sidebar plus its 2 px
+/// gray edge (chrome.rs). Effects must never paint over the sidebar.
+pub const CANVAS_LEFT: i32 = crate::chrome::CANVAS_LEFT;
+/// Top edge of the drawable canvas for effects: below the status strip.
+pub const CANVAS_TOP: i32 = crate::chrome::STATUS_H;
 
 thread_local! {
     /// (x0, y0, x1, y1) box `Fb::set` is limited to; the whole screen by
@@ -472,15 +470,15 @@ mod tests {
 
     const SENTINEL: u16 = 0x1234;
 
-    /// Sidebar (SIDEBAR_W 110 + 2px edge) and status strip (STATUS_H 64) from
+    /// Sidebar (SIDEBAR_W 154 + 2px edge) and status strip (STATUS_H 64) from
     /// main.rs; literal on purpose so the contract is stated independently.
     fn protected(x: i32, y: i32) -> bool {
-        x < 112 || y < 64
+        x < 156 || y < 64
     }
 
     #[test]
     fn canvas_consts_match_main_layout() {
-        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (110 + 2, 64));
+        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (154 + 2, 64));
     }
 
     fn params(overlay: Overlay) -> EffectParams {

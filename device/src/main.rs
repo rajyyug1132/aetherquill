@@ -28,11 +28,12 @@ mod grimoire;
 mod qtfb;
 
 use device::session::{to_raw_strokes, ScreenStroke, Session};
-use device::{catalogue, lag, pen, render, resume, shapes, spell_view};
+use device::{catalogue, chrome, lag, pen, render, resume, shapes, spell_view};
+use chrome::{slot_at, SIDEBAR_W, STATUS_H};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
-use spell_view::{status_lines, EffectParams};
+use spell_view::EffectParams;
 
 /// Opens the Wacom digitizer read-only and non-blocking (no EVIOCGRAB:
 /// xochitl keeps receiving the pen). None -> fall back to AppLoad's pen events.
@@ -108,115 +109,17 @@ const INK_W: i32 = 3;
 /// qtfb socket; 40ms (25Hz) was the first safe value, 16ms (~60Hz) the current.
 const INK_FLUSH_MS: u128 = 16;
 
-// Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
-const SIDEBAR_W: i32 = 110;
-const STATUS_H: i32 = 64;
-const ICON_X: i32 = 13;
-const ICON_W: i32 = 84;
-const ICON_H: i32 = 80;
-const ICON_GAP: i32 = 12;
-
-fn icon_y(slot: i32) -> i32 {
-    15 + slot * (ICON_H + ICON_GAP)
-}
-
-/// Which toolbar slot a sidebar tap lands in (None = gap/below toolbar).
-fn icon_slot(y: i32) -> Option<i32> {
-    let rel = y - 15;
-    if rel < 0 {
-        return None;
-    }
-    let slot = rel / (ICON_H + ICON_GAP);
-    if slot <= 5 && rel % (ICON_H + ICON_GAP) < ICON_H {
-        Some(slot)
-    } else {
-        None
-    }
-}
-
-/// Icon box; active tools invert (black fill, white glyph). Returns glyph color.
-fn icon_frame(fb: &mut Fb, slot: i32, active: bool) -> u16 {
-    let y = icon_y(slot);
-    if active {
-        fb.fill_rect(ICON_X, y, ICON_W, ICON_H, BLACK);
-        WHITE
-    } else {
-        fb.rect_outline(ICON_X, y, ICON_W, ICON_H, 3, BLACK);
-        BLACK
-    }
-}
-
-/// Curved undo/redo arrow: three-quarter arc + arrowhead. `flip` mirrors it.
-fn draw_arrow_icon(fb: &mut Fb, slot: i32, flip: bool) {
-    let fg = icon_frame(fb, slot, false);
-    let y = icon_y(slot);
-    let (cx, cy, r) = (ICON_X + ICON_W / 2, y + ICON_H / 2 + 4, 18);
-    let (a0, a1) = if flip {
-        (-0.75 * std::f64::consts::PI, 0.9 * std::f64::consts::PI)
-    } else {
-        (-0.25 * std::f64::consts::PI, -1.9 * std::f64::consts::PI)
-    };
-    fb.arc(cx, cy, r, a0, a1, 3, fg);
-    let tip = a1;
-    let (tx, ty) = (cx + (tip.cos() * r as f64) as i32, cy + (tip.sin() * r as f64) as i32);
-    let side = if flip { -1.0 } else { 1.0 };
-    let tangent = tip + side * std::f64::consts::FRAC_PI_2;
-    for spread in [-0.5, 0.5] {
-        let a = tangent + spread;
-        fb.line(tx, ty, tx + (a.cos() * 12.0) as i32, ty + (a.sin() * 12.0) as i32, 3, fg);
-    }
-}
-
-fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
-    fb.fill_rect(0, 0, SIDEBAR_W, H, WHITE);
-    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, GRAY);
-
-    // Slot 0: pen - nib pointing down-left.
-    let fg = icon_frame(fb, 0, !erase_mode);
-    let y = icon_y(0);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 56, y + 26, 6, fg);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 22, y + 60, 2, fg);
-
-    // Slot 1: eraser - tilted block with a wipe line under it.
-    let fg = icon_frame(fb, 1, erase_mode);
-    let y = icon_y(1);
-    fb.line(ICON_X + 26, y + 44, ICON_X + 44, y + 26, 14, fg);
-    fb.line(ICON_X + 22, y + 60, ICON_X + 60, y + 60, 2, fg);
-
-    // Slots 2-3: undo / redo arrows.
-    draw_arrow_icon(fb, 2, false);
-    draw_arrow_icon(fb, 3, true);
-
-    // Slot 4: clear - X.
-    let fg = icon_frame(fb, 4, false);
-    let y = icon_y(4);
-    fb.line(ICON_X + 26, y + 24, ICON_X + 58, y + 56, 3, fg);
-    fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
-
-    // Slot 5: Spell Catalogue - a page of listed spells.
-    let fg = icon_frame(fb, 5, false);
-    let y = icon_y(5);
-    fb.rect_outline(ICON_X + 24, y + 16, 36, 48, 3, fg);
-    for row in 0..3 {
-        fb.fill_rect(ICON_X + 31, y + 28 + row * 11, 22, 3, fg);
-    }
-}
 
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
-    let left = SIDEBAR_W + 12;
-    let width = W - left - 12;
-    fb.fill_rect(left, 0, width, STATUS_H - 4, WHITE);
-    fb.text(left + 8, 10, line1, 3, BLACK);
-    fb.text(left + 8, 42, line2, 2, GRAY);
-    let _ = client.update_partial(left, 0, width, STATUS_H);
+    let (x, y, w, h) = chrome::draw_status(fb, line1, line2);
+    let _ = client.update_partial(x, y, w, h);
 }
 
 /// Full redraw. When a complete ring is known, its member strokes render as
 /// one perfect circle (display-only snap — recognition still sees raw points).
 fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>, erase_mode: bool) {
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(fb, erase_mode);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(fb, erase_mode);
     let ring = ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)));
     let ring_ids: &[String] = ring.map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
@@ -343,7 +246,7 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
     let spell = &outcome.spell;
-    let (line1, line2) = status_lines(spell);
+    let (line1, line2) = chrome::spell_status(spell);
     draw_status(fb, client, &line1, &line2);
 
     let Some(ring) = &outcome.ring else { return };
@@ -398,8 +301,7 @@ fn main() {
     let mut fb = Fb { px };
 
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(&mut fb, false);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(&mut fb, false);
     let _ = client.update_all();
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
@@ -453,6 +355,7 @@ fn main() {
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
     let mut catalogue_open = false;
+    let mut catalogue_page = 0usize;
     // After a catalogue pick, the same finger's queued touch events must not
     // drag the freshly inked strokes: ignore canvas touch until it lifts.
     let mut touch_until_lift_ignored = false;
@@ -667,8 +570,14 @@ fn main() {
                             continue;
                         }
                         last_chrome_tap = Instant::now();
+                        if let Some(nav) = catalogue::nav_at(event.x, event.y, spell_catalogue.len()) {
+                            catalogue_page = catalogue::turn(catalogue_page, nav, spell_catalogue.len());
+                            catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
+                            let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                            continue;
+                        }
                         catalogue_open = false;
-                        let Some(i) = catalogue::row_at(event.x, event.y, spell_catalogue.len()) else {
+                        let Some(i) = catalogue::spell_at(event.x, event.y, spell_catalogue.len(), catalogue_page) else {
                             redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                             continue;
                         };
@@ -728,13 +637,13 @@ fn main() {
                         continue;
                     }
                     last_chrome_tap = Instant::now();
-                    let slot = icon_slot(event.y);
-                    eprintln!("sidebar tap y={} -> slot {:?}", event.y, slot);
+                    let slot = slot_at(event.x, event.y);
+                    eprintln!("sidebar tap {},{} -> slot {:?}", event.x, event.y, slot);
                     match slot {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
-                            draw_sidebar(&mut fb, erase_mode);
-                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(5) + ICON_H + 12);
+                            chrome::draw_sidebar(&mut fb, erase_mode);
+                            let _ = client.update_partial(0, 0, SIDEBAR_W, chrome::toolbar_h());
                             continue;
                         }
                         Some(2) => {
@@ -752,8 +661,9 @@ fn main() {
                         Some(5) => {
                             catalogue_open = !catalogue_open;
                             if catalogue_open {
-                                catalogue::draw_panel(&mut fb, &spell_catalogue);
-                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h(spell_catalogue.len()));
+                                catalogue_page = 0;
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
                             } else {
                                 redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                             }
