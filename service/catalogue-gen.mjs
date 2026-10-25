@@ -20,7 +20,7 @@ const samples = JSON.parse(readFileSync(new URL("./vendor/wha/src/dictionary/sam
 // Device drawing area in canvas px: x from the sidebar (110/2) to 1404/2,
 // y from the status strip (64/2) to 1872/2.
 const CENTER = { x: (55 + 702) / 2, y: (32 + 936) / 2 };
-const SAMPLE_SIZE = 600; // normalized 0..1 sample strokes -> canvas px
+const SAMPLE_SIZE = 650; // normalized 0..1 sample strokes -> canvas px (650 fits the 647x904 area; larger = jitter-sturdier)
 
 // --- stroke synthesis (same shapes as service/test.js / parity-gen.mjs) ---
 function ringPoints(cx, cy, radius) {

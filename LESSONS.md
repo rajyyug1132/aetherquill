@@ -1,0 +1,1 @@
+- 2026-10-25 pass 2: re-sampling the catalogue strokes to 2 px spacing did not move P4 (97/100) and cost 160 KB of binary — the fire sample's weakness is its sigil shape (fire vs light), not point density. Reverted.

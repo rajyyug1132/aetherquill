@@ -113,6 +113,77 @@ mod tests {
         last.expect("spell has strokes")
     }
 
+    /// P4 robustness eval. Each redraw scales the whole spell by +-3% and
+    /// rotates it by +-5 degrees about its centre, then moves every point by up
+    /// to +-2 screen px. Seeds are held out: never change them to make it pass.
+    const HELD_OUT_SEEDS: [u64; 5] = [0x5eed_0001, 0xa11c_e5ed, 0x0bad_cafe, 0x1234_5678, 0xfeed_beef];
+    const REDRAWS_PER_SEED: usize = 20;
+
+    struct Rng(u64);
+    impl Rng {
+        fn unit(&mut self) -> f64 {
+            // xorshift64*
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn within(&mut self, amp: f64) -> f64 {
+            (self.unit() * 2.0 - 1.0) * amp
+        }
+    }
+
+    fn jittered(spell: &CatalogueSpell, rng: &mut Rng) -> Vec<Vec<(f64, f64)>> {
+        let strokes = spell.screen_strokes();
+        let all = strokes.iter().flatten();
+        let (x0, x1, y0, y1) = all.fold((f64::MAX, f64::MIN, f64::MAX, f64::MIN), |(a, b, c, d), p| (a.min(p.0), b.max(p.0), c.min(p.1), d.max(p.1)));
+        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let scale = 1.0 + rng.within(0.03);
+        let (sin, cos) = rng.within(5f64.to_radians()).sin_cos();
+        strokes
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|&(x, y)| {
+                        let (dx, dy) = ((x - cx) * scale, (y - cy) * scale);
+                        (cx + dx * cos - dy * sin + rng.within(2.0), cy + dx * sin + dy * cos + rng.within(2.0))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "P4 eval, slow in debug: cargo test --release --lib -- --ignored jittered"]
+    fn jittered_redraws_all_read_back() {
+        let dictionary = load_dictionary();
+        let mut failures = Vec::new();
+        for spell in load() {
+            let mut passed = 0;
+            for seed in HELD_OUT_SEEDS {
+                let mut rng = Rng(seed ^ spell.id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
+                for i in 0..REDRAWS_PER_SEED {
+                    let raw: Vec<RawStroke> = jittered(&spell, &mut rng)
+                        .iter()
+                        .enumerate()
+                        .map(|(k, s)| RawStroke { id: format!("s{}", k + 1), points: s.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect() })
+                        .collect();
+                    let result = classify_drawing(&raw, None, &dictionary, "test", &INPUT, &RING, &LAYERS, &RECOGNITION);
+                    let ir = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
+                    let e = &spell.expected;
+                    if ir.active && ir.element.as_deref() == Some(e.element.as_str()) && ir.primary_manifestation == e.primary_manifestation {
+                        passed += 1;
+                    } else {
+                        let unknowns: Vec<String> = result.glyph_ast.unknowns.iter().map(|u| format!("{:?}@{:.2}:{}", u.layer, u.radius_norm, u.reason)).collect();
+                        failures.push(format!("{} seed {seed:#x} #{i}: {} {:?} {} {:?} unknowns {unknowns:?}", spell.id, ir.status, ir.element, ir.primary_manifestation, ir.warnings));
+                    }
+                }
+            }
+            println!("P4 {}: {passed}/{}", spell.id, HELD_OUT_SEEDS.len() * REDRAWS_PER_SEED);
+        }
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    }
+
     #[test]
     fn catalogue_has_the_four_spells() {
         let ids: Vec<String> = load().into_iter().map(|s| s.id).collect();
