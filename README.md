@@ -199,7 +199,7 @@ keeps the parity tests meaningful. LOOP.md has the porting recipe.
 - [x] On-device app: ink, ring snap, elemental effects, sidebar tools
 - [x] Modifying signs (column, levitation, convergence) wired into the device flow
 - [x] Redraw after suspend/resume
-- [x] Spell Catalogue with four tested spells
+- [x] Spell Catalogue: every sigil x sign combo the recognizer reads back (12 spells, each jitter-tested)
 - [x] Release bundle + tag-driven release workflow
 - [ ] Run INSTALL-CHECKLIST.md for 0.3.6 on hardware
 - [ ] Start xovi after reboot without SSH, without leaving `/home/root` (see TODOS.md)
