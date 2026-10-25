@@ -266,14 +266,11 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
         }
     }
 
-    // Covers the settle frame's labels and the widest reach a sign can give.
-    // Clamped to the canvas and the screen, like effect_dirty_rect.
-    // 120 reaches the settle frame's second label line (radius + 96, scale 3).
-    let pad = 120.max(params.reach);
-    let (x0, y0) = ((cx - radius - pad).max(render::CANVAS_LEFT), (cy - radius - pad).max(render::CANVAS_TOP));
-    let (x1, y1) = ((cx + radius + pad).min(W), (cy + radius + pad).min(H));
-    if x1 > x0 && y1 > y0 {
-        let _ = client.update_partial(x0, y0, x1 - x0, y1 - y0);
+    // Halo, effect annulus and (for an element) the settle labels, from the
+    // same geometry render.rs draws them with; clamped to the canvas/screen.
+    let element = spell.element.as_deref().unwrap_or("");
+    if let Some((x, y, w, h)) = render::effect_dirty_rect(cx, cy, radius, element, &params, spell.element.is_some()) {
+        let _ = client.update_partial(x, y, w, h);
     }
 }
 
@@ -413,6 +410,8 @@ fn main() {
             current.clear();
             dirty_rect = None;
             ink_pending.clear();
+            stroke_lat.clear();
+            stroke_busy = 0;
             moving = None;
             // The result restores the status line; same signature, so no replay.
             repaint_and_recognize!(session.previous_ring.clone());
@@ -536,7 +535,6 @@ fn main() {
                 }
                 qtfb::INPUT_PEN_RELEASE => {
                     eprintln!("pen release, {} pts", current.len());
-                    pen_ts.clear();
                     if erase_mode {
                         if erased_any {
                             erased_any = false;
@@ -708,8 +706,10 @@ fn main() {
         }
 
         // Recognition results land between strokes, never mid-stroke (a ring
-        // snap repaints the page and would wipe live ink).
-        if !pen_down {
+        // snap repaints the page and would wipe live ink), and never under an
+        // open catalogue panel (a redraw/animation would wipe it on screen
+        // while taps still hit-test it). They wait in the channel until then.
+        if !pen_down && !catalogue_open {
             if let Some(outcome) = recognizer.latest() {
                 apply_outcome!(outcome);
             }

@@ -191,7 +191,9 @@ impl Fb<'_> {
     }
 
     /// Whiten the effect annulus (bounding box minus the inner disk that holds
-    /// the seal + sigil), then restamp the bold seal ring.
+    /// the seal + sigil), then restamp the bold seal ring. Writes `px`
+    /// directly, bypassing CLIP: safe only because annulus_bbox is clamped to
+    /// the canvas (CANVAS_LEFT/CANVAS_TOP). Keep it that way.
     fn clear_seal_annulus(&mut self, cx: i32, cy: i32, radius: i32, pad: i32) {
         let inner = radius + 4;
         let (x0, y0, x1, y1) = annulus_bbox(cx, cy, pad);
