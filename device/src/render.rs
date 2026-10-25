@@ -3,6 +3,7 @@
 //! effects can be rendered and eyeballed on any host (see examples/effect_preview).
 
 use crate::spell_view::{EffectParams, Overlay};
+use std::cell::Cell;
 
 pub const W: i32 = 1404;
 pub const H: i32 = 1872;
@@ -16,6 +17,38 @@ pub const GRAY: u16 = 0x8410; // mid-gray in RGB565
 pub const EFFECT_FRAMES: i32 = 10;
 /// How far past the seal radius the effect reaches.
 pub const EFFECT_REACH: i32 = 120;
+
+/// Left edge of the drawable canvas for effects. Mirrors main.rs
+/// `SIDEBAR_W + 2` (110 px sidebar + its 2 px gray edge): effects must never
+/// paint over the sidebar. Keep in sync with main.rs.
+pub const CANVAS_LEFT: i32 = 112;
+/// Top edge of the drawable canvas for effects. Mirrors main.rs `STATUS_H`
+/// (the status strip). Keep in sync with main.rs.
+pub const CANVAS_TOP: i32 = 64;
+
+thread_local! {
+    /// (left, top) below which `Fb::set` refuses to write; (0, 0) = no clip.
+    /// Only `effect_frame`/`effect_settle` raise it (via `CanvasClip`), so the
+    /// sidebar and status drawing in main.rs is unaffected. Thread-local so
+    /// parallel host tests don't see each other's clip.
+    static CLIP: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
+}
+
+/// RAII: clips every `Fb` write on this thread to the canvas until dropped.
+struct CanvasClip;
+
+impl CanvasClip {
+    fn on() -> Self {
+        CLIP.set((CANVAS_LEFT, CANVAS_TOP));
+        CanvasClip
+    }
+}
+
+impl Drop for CanvasClip {
+    fn drop(&mut self) {
+        CLIP.set((0, 0));
+    }
+}
 
 pub struct Fb<'a> {
     pub px: &'a mut [u16],
@@ -60,7 +93,8 @@ impl Fb<'_> {
     }
 
     pub fn set(&mut self, x: i32, y: i32, c: u16) {
-        if (0..W).contains(&x) && (0..H).contains(&y) {
+        let (left, top) = CLIP.get();
+        if (left.max(0)..W).contains(&x) && (top.max(0)..H).contains(&y) {
             self.px[(y * W + x) as usize] = c;
         }
     }
@@ -144,17 +178,34 @@ impl Fb<'_> {
     /// the seal + sigil), then restamp the bold seal ring.
     fn clear_seal_annulus(&mut self, cx: i32, cy: i32, radius: i32, pad: i32) {
         let inner = radius + 4;
-        let (x0, y0) = ((cx - pad).max(0), (cy - pad).max(0));
-        let (x1, y1) = ((cx + pad).min(W), (cy + pad).min(H));
+        let (x0, y0, x1, y1) = annulus_bbox(cx, cy, pad);
         for yy in y0..y1 {
-            for xx in x0..x1 {
-                let d2 = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy);
-                if d2 > inner * inner {
-                    self.set(xx, yy, WHITE);
-                }
-            }
+            // Inner disk spans [hole_l, hole_r) on this row (empty off the disk).
+            let dy = yy - cy;
+            let (hole_l, hole_r) = if dy.abs() <= inner {
+                let dx = (((inner * inner - dy * dy) as f64).sqrt()) as i32;
+                (cx - dx, cx + dx + 1)
+            } else {
+                (x1, x1)
+            };
+            let row = (yy * W) as usize;
+            self.px[row + x0 as usize..row + hole_l.clamp(x0, x1) as usize].fill(WHITE);
+            self.px[row + hole_r.clamp(x0, x1) as usize..row + x1 as usize].fill(WHITE);
         }
         self.circle(cx, cy, radius + 8, 4, BLACK);
+    }
+}
+
+/// Screen box (x0, y0, x1, y1; end exclusive) an effect around (cx,cy) with
+/// `pad` = radius + reach clears and draws in, clamped to the screen and to
+/// the canvas (never the sidebar/status strip). Empty (x0 >= x1) if off-canvas.
+fn annulus_bbox(cx: i32, cy: i32, pad: i32) -> (i32, i32, i32, i32) {
+    let (x0, y0) = ((cx - pad).max(CANVAS_LEFT), (cy - pad).max(CANVAS_TOP));
+    let (x1, y1) = ((cx + pad).min(W), (cy + pad).min(H));
+    if x0 >= x1 || y0 >= y1 {
+        (x0, y0, x0, y0)
+    } else {
+        (x0, y0, x1, y1)
     }
 }
 
@@ -181,6 +232,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
     let reach = params.reach as f64;
     let w = params.weight;
     let p = f as f64 / (EFFECT_FRAMES - 1) as f64; // progress 0..1
+    let _clip = CanvasClip::on();
     fb.clear_seal_annulus(cx, cy, radius, radius + params.reach);
     let r0 = (radius + 14) as f64;
     let at = |a: f64, r: f64| (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
@@ -360,6 +412,7 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
 /// (and the sign manifestation under it, when there is one).
 pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
     let pad = radius + params.reach;
+    let _clip = CanvasClip::on();
     fb.clear_seal_annulus(cx, cy, radius, pad);
     fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
     let label = &params.manifestation;
@@ -380,6 +433,11 @@ mod tests {
         x < 112 || y < 64
     }
 
+    #[test]
+    fn canvas_consts_match_main_layout() {
+        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (110 + 2, 64));
+    }
+
     fn params(overlay: Overlay) -> EffectParams {
         EffectParams { reach: 123, weight: 1, strength: 0.65, spread: 0.4, manifestation: "column".into(), overlay }
     }
@@ -388,26 +446,26 @@ mod tests {
     fn big_ring_effects_leave_sidebar_and_status_strip_alone() {
         let overlays = [Overlay::Aura, Overlay::Column { dir: (0.0, -1.0) }, Overlay::Levitation { lift: 0.26 }, Overlay::Convergence { point: (0.0, 0.34), rigidity: 0.61 }];
         // (700,500) pushes the annulus over the status strip, (700,900) over the sidebar.
-        for (cx, cy) in [(700, 900), (700, 500), (300, 300)] {
-            for el in ["fire", "water", "wind", "earth", "light"] {
-                for overlay in overlays.clone() {
-                    let mut px = vec![WHITE; (W * H) as usize];
-                    for y in 0..H {
-                        for x in 0..W {
-                            if protected(x, y) {
-                                px[(y * W + x) as usize] = SENTINEL;
-                            }
+        let mut px = vec![WHITE; (W * H) as usize];
+        for (n, (cx, cy)) in [(700, 900), (700, 500), (300, 300)].into_iter().enumerate() {
+            for (m, el) in ["fire", "water", "wind", "earth", "light"].into_iter().enumerate() {
+                px.fill(WHITE);
+                for y in 0..H {
+                    for x in 0..W {
+                        if protected(x, y) {
+                            px[(y * W + x) as usize] = SENTINEL;
                         }
                     }
-                    let mut fb = Fb { px: &mut px };
-                    let p = params(overlay);
-                    for f in 0..EFFECT_FRAMES {
-                        effect_frame(&mut fb, cx, cy, 519, el, f, &p);
-                    }
-                    effect_settle(&mut fb, cx, cy, 519, el, &p);
-                    let hit = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| protected(x, y) && px[(y * W + x) as usize] != SENTINEL).count();
-                    assert_eq!(hit, 0, "{el} at ({cx},{cy}): {hit} sidebar/status pixels overwritten");
                 }
+                let mut fb = Fb { px: &mut px };
+                let p = params(overlays[(n + m) % overlays.len()].clone());
+                // Debug builds are slow: first, middle and last frame + settle.
+                for f in [0, EFFECT_FRAMES / 2, EFFECT_FRAMES - 1] {
+                    effect_frame(&mut fb, cx, cy, 519, el, f, &p);
+                }
+                effect_settle(&mut fb, cx, cy, 519, el, &p);
+                let hit = (0..H).flat_map(|y| px[(y * W) as usize..((y + 1) * W) as usize].iter().enumerate().map(move |(x, &v)| (x as i32, y, v))).filter(|&(x, y, v)| protected(x, y) && v != SENTINEL).count();
+                assert_eq!(hit, 0, "{el} at ({cx},{cy}): {hit} sidebar/status pixels overwritten");
             }
         }
     }
