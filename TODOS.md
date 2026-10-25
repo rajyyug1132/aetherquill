@@ -1,25 +1,21 @@
 # TODOs
 
-Deferred work from the 2026-07-08 CEO review (Rust-port architecture decision).
+Deferred work. History: the rm2fb watch item (dead since the 2026-07-10
+xovi/AppLoad/qtfb pivot) and suspend/resume redraw (shipped: device/src/resume.rs)
+were removed 2026-10-25.
 
-## Watch for rm2fb support on OS 3.27.1.0
-**What:** Periodically check ddvk/remarkable2-framebuffer + toltec for a
-build supporting OS 3.27.1.0 (device build 20260506100933).
-**Why:** The entire on-device deploy path (T5/T6) is gated on this —
-confirmed incompatible 2026-07-09. All off-device work is done and waiting.
-**Where to check:** https://github.com/ddvk/remarkable2-framebuffer/issues +
-https://toltec-dev.org/ compat table.
-**Effort:** S (a look, monthly-ish). **Priority:** P1 — it's the only blocker.
-
-## Suspend/resume-safe redraw handling
-**What:** Handle the RM2 power button's suspend/resume without leaving a corrupted
-screen (riddle's takeover mode handles this explicitly for the Paper Pro).
-**Why:** Raw-framebuffer takeover apps can leave stale/garbled ink across a
-suspend cycle if untreated. Flagged during CEO review as real robustness, not
-pure delight — deliberately deferred rather than built now.
+## xovi start after reboot — owner decision
+**What:** xovi doesn't survive a reboot. Today: `/home/root/wha/start-xovi.sh`
+over SSH after each boot (idempotent, home-dir-only).
+**Option:** Vellum's `tripletap` package starts xovi on a power-button
+triple-press, but installs a systemd unit into `/etc/systemd/system` — that
+breaks the "everything under /home/root" rollback property. Adopt only on an
+explicit decision; record it in CLAUDE.md if taken.
 **Effort:** S. **Priority:** P2.
-**Context:** `client`'s takeover mode stops xochitl and draws directly to the
-framebuffer; on resume, redraw the full canvas from the stroke store
-(`redraw_all` in the original `main.rs` already does this on UNDO/CLEAR — the
-same function works here) instead of trusting the panel's prior contents.
-**Depends on:** the Rust port (recognizer + device crates) landing first.
+
+## Sign-to-effect visual mapping
+**What:** spellIR numbers for signs are upstream-exact (parity-tested), but
+the e-ink overlays (column pillar, levitation chevrons, convergence spokes)
+are Aetherquill's own — upstream's particle renderer isn't vendored. If the
+upstream renderer is ever vendored, port its sign behaviour 1:1.
+**Effort:** M. **Priority:** P3.

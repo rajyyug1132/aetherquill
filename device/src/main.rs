@@ -197,7 +197,7 @@ struct SpellOutcome {
 fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
     let t0 = Instant::now();
     let raw = to_raw_strokes(strokes);
-    let result = classify_drawing(&raw, previous_ring, dictionary, "0.2.0", &INPUT, &RING, &LAYERS, &RECOGNITION);
+    let result = classify_drawing(&raw, previous_ring, dictionary, env!("CARGO_PKG_VERSION"), &INPUT, &RING, &LAYERS, &RECOGNITION);
     eprintln!("recognize: {} strokes in {}ms", strokes.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
     SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }

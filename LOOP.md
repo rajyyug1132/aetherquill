@@ -54,7 +54,8 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
   xovi + AppLoad + qtfb via Vellum; device/ rewritten pure-Rust (qtfb client
   ported from riddle, input via qtfb socket, no libremarkable); builds as
   static armv7 musl binary FROM WINDOWS (rust-lld, no WSL/Docker/cross)
-- [ ] ⛔ HUMAN: install Vellum + xovi + appload on tablet · copy appload bundle · first run
+- [x] ⛔ HUMAN: install Vellum + xovi + appload on tablet — done 2026-07-16 (hello_ink gate passed)
+- [ ] ⛔ HUMAN: first full Aetherquill run from the release bundle — INSTALL-CHECKLIST.md
 
 ## Per-iteration recipe
 
@@ -77,7 +78,9 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
      `ring-earth` is ambiguous/invalid (earth's 22-stroke template mutilates
      under minStrokeLength filtering); `spellIR.activatedAt` is nulled in
      fixtures (wall-clock).
-5. Run tests (MSVC env is required, this exact incantation works):
+5. Run tests. On Yyug's Windows machine cargo is now on PATH, so plain
+   `cargo test` works; the MSVC incantation below is the fallback if a shell
+   lacks the env. Cloud sessions are Linux — ignore it there:
    ```
    cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && set PATH=%USERPROFILE%\.cargo\bin;%PATH% && cd /d "D:\Side project witch hat atlier\recognizer" && cargo test'
    ```
@@ -88,12 +91,17 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 7. Fixtures only change if `service/parity-gen.mjs` changes; regenerate with
    `node service/parity-gen.mjs` and commit the diff together with the reason.
 
-## Environment facts (verified this session)
+## Environment facts (re-verified 2026-10-25)
 
-- Windows 11, no WSL/Docker. Rust 1.96.1 MSVC + VS Build Tools installed.
-- `cargo`/`rustc` are NOT on the default PATH — use the incantation above.
+- Yyug's machine: Windows 11, no WSL/Docker. Rust 1.96.1 MSVC + VS Build
+  Tools; `cargo`/`rustc` on PATH; `armv7-unknown-linux-musleabihf` target
+  installed (static device build via rust-lld, see `.cargo/config.toml`).
+- Cloud sessions are Linux: plain `cargo` everywhere, no MSVC step.
 - Node v24 on PATH. Use `python`, never `python3` (Store stub).
-- Repo: https://github.com/rajyyug1132/aetherquill, branch `master`, gh CLI authed.
+- Repo: https://github.com/rajyyug1132/aetherquill, branch `master`. git push
+  works via the credential manager; the `gh` CLI token was returning 401 on
+  2026-10-25 — re-run `gh auth login` before relying on it.
+- Release builds: `.github/workflows/release.yml` on a `v*` tag.
 
 ## Blocked
 

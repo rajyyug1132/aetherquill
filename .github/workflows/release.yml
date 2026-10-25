@@ -1,0 +1,36 @@
+name: release
+
+# Push a tag like v0.3.0 -> tests, static armv7 musl build, GitHub release with
+# the install bundle. Builds only; nothing here talks to a tablet.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain + armv7 musl target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add armv7-unknown-linux-musleabihf
+
+      - name: Tests (recognizer parity + device host tests)
+        run: |
+          (cd recognizer && cargo test -q)
+          (cd device && cargo test --lib -q)
+
+      - name: Build bundle
+        run: bash scripts/make-bundle.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/aetherquill-${GITHUB_REF_NAME#v}.tar.gz" \
+            --title "Aetherquill $GITHUB_REF_NAME" --generate-notes

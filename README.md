@@ -16,7 +16,7 @@ Recognition is a 1:1 Rust port of
 [wha-spell-simulator](https://github.com/ytnrvdf/wha-spell-simulator)'s
 pipeline (try its [live web version](https://ytnrvdf.github.io/wha-spell-simulator)
 — same recognizer, same dictionaries). The port is verified module-by-module
-against the vendored original JS with 83 parity tests.
+against the vendored original JS with 85 tests, including end-to-end and per-sign spellIR parity.
 
 ```
 draw a ring ──► draw a sigil inside it ──► close the ring
@@ -57,21 +57,25 @@ and the [Vellum](https://github.com/vellum-dev/vellum) package manager stack.
    reboot
    ```
 
-   ⚠️ xovi does **not** auto-start after a reboot: run `/home/root/xovi/start`
-   after each boot (the screen flickers as the UI reloads with AppLoad).
+   ⚠️ xovi does **not** auto-start after a reboot: run
+   `/home/root/wha/start-xovi.sh` (installed by Aetherquill's `install.sh`) or
+   `/home/root/xovi/start` after each boot — the screen flickers as the UI
+   reloads with AppLoad.
 
-2. **Build and deploy Aetherquill** (from any OS with Rust — plain Windows
-   works, no WSL/Docker):
+2. **Install Aetherquill** from a release bundle (GitHub release, or build
+   it yourself on any OS with Rust + bash — plain Windows works, no WSL/Docker):
 
    ```sh
    rustup target add armv7-unknown-linux-musleabihf
-   cargo build --release --target armv7-unknown-linux-musleabihf --manifest-path device/Cargo.toml
+   bash scripts/make-bundle.sh 0.3.0        # -> dist/aetherquill-0.3.0.tar.gz
 
-   ssh root@10.11.99.1 "mkdir -p /home/root/xovi/exthome/appload/aetherquill /home/root/wha/spells"
-   scp device/appload/aetherquill/external.manifest.json root@10.11.99.1:/home/root/xovi/exthome/appload/aetherquill/
-   scp device/target/armv7-unknown-linux-musleabihf/release/aetherquill root@10.11.99.1:/home/root/xovi/exthome/appload/aetherquill/
-   ssh root@10.11.99.1 "chmod +x /home/root/xovi/exthome/appload/aetherquill/aetherquill"
+   scp dist/aetherquill-0.3.0.tar.gz root@10.11.99.1:/home/root/
+   ssh root@10.11.99.1 "cd /home/root && tar xzf aetherquill-0.3.0.tar.gz && sh aetherquill-0.3.0/install.sh"
    ```
+
+   `install.sh` writes only `/home/root/xovi/exthome/appload/aetherquill`
+   and `/home/root/wha`; `sh install.sh --uninstall` removes both. First run:
+   follow [INSTALL-CHECKLIST.md](INSTALL-CHECKLIST.md).
 
 3. **Cast**: open AppLoad in the tablet UI, launch Aetherquill, draw a big
    ring, draw a sigil (fire, water, wind, earth, or light) in its center.
@@ -96,7 +100,7 @@ Two crates, split on purpose:
 
 ```
 recognizer/  the ported recognition pipeline — pure Rust, zero device deps,
-             compiles + tests on any OS (83 parity tests)
+             compiles + tests on any OS (85 tests incl. parity)
 device/      the RM2 app: qtfb client, sidebar UI, shape snapping, effects.
              lib part (shapes.rs, render.rs) is host-testable; the binary
              is ARM-only
@@ -108,7 +112,7 @@ CLAUDE.md    durable architecture decisions, device state, phase-gate history
 
 ```sh
 # recognition pipeline — the core, fully testable off-device
-cd recognizer && cargo test          # 83 tests incl. end-to-end parity
+cd recognizer && cargo test          # 85 tests incl. end-to-end + sign parity
 
 # device logic that doesn't need a device
 cd device && cargo test --lib        # shape-snapping emulation tests
@@ -130,7 +134,7 @@ Issues and PRs welcome. Ground rules:
 
 - Open an issue first for anything non-trivial.
 - `service/vendor/wha/` is never edited — it's the parity ground truth.
-- Changes to `recognizer/` must keep all 83 parity tests green; if upstream
+- Changes to `recognizer/` must keep all recognizer tests (85, incl. parity) green; if upstream
   moved, regenerate fixtures with `parity-gen.mjs` in the same PR.
 - Device-touching changes: prove what you can off-device first (host tests /
   `effect_preview`), and note what was actually verified on hardware.
@@ -140,16 +144,22 @@ Issues and PRs welcome. Ground rules:
 
 ## Known issues
 
-- xovi doesn't auto-start after reboot — `/home/root/xovi/start` by hand
-  (persistence via a Vellum service package is unexplored).
+- xovi doesn't auto-start after reboot — run `/home/root/wha/start-xovi.sh`
+  over SSH after each boot (idempotent; does nothing if xovi is already
+  loaded). Vellum's `tripletap` package can start it from a power-button
+  triple-press, but it installs a systemd unit into `/etc`, outside this
+  project's `/home/root`-only rollback guarantee — opt in knowingly.
 - The marker's built-in eraser end can't be detected: AppLoad's qtfb bridge
   doesn't forward pen-vs-eraser (`devId` is a TODO upstream), hence the
   eraser is a sidebar toggle.
-- Suspend/resume can leave a stale screen; redraw-on-resume is deferred
-  (TODOS.md).
+- Suspend/resume: the app detects a resume (BOOTTIME vs MONOTONIC drift) and
+  redraws from its stroke store; a stroke in progress when the tablet slept
+  is dropped. Not yet verified on hardware.
 - One ring, one primary sigil per drawing (an upstream pipeline limit).
-- Modifying signs (levitation/force/spread…) are recognized by the pipeline
-  but not yet part of the on-device flow.
+- Modifying signs (column, levitation, convergence) compile exactly as
+  upstream and show in the status line; their e-ink overlays are
+  Aetherquill's own drawing, since upstream's renderer isn't vendored. Signs
+  recognize most reliably drawn in the outer band directly below the seal.
 - E-ink animation is ~6 frames at ~12fps with partial refreshes — dramatic,
   not smooth; ghosting varies by panel.
 
