@@ -6,7 +6,7 @@
 //! Also writes catalogue_preview.ppm: each Spell Catalogue entry's strokes,
 //! recognized + compiled by the real pipeline, at its effect's peak frame.
 
-use device::render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, EFFECT_REACH, H, W};
+use device::render::{effect_dirty_rect, effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, EFFECT_FRAME_MS, EFFECT_REACH, H, W};
 use device::catalogue::{self, CANVAS_SCALE};
 use device::spell_view::{EffectParams, Overlay};
 use recognizer::config::{COMPILER, EFFECT_SIZE, INPUT, LAYERS, RECOGNITION, RING};
@@ -71,7 +71,42 @@ fn catalogue_preview() {
     write_ppm("catalogue_preview.ppm", &out, out_w, tile);
 }
 
+/// P5: per element, frame count, host render time per frame and the scheduled
+/// interval. Asserts at least 2x the old 10 frames in the same 800 ms total
+/// (10 x 80 ms) and no frame longer than interval + host render time = 120 ms.
+/// Host times only: the tablet's CPU is slower, so this is unverified on hardware.
+fn p5_timing() {
+    const BASELINE_FRAMES: i32 = 10;
+    const BASELINE_TOTAL_MS: u64 = 10 * 80;
+    const MAX_FRAME_MS: f64 = 120.0;
+    let mut px = vec![0xffffu16; (W * H) as usize];
+    let mut fb = Fb { px: &mut px };
+    println!("P5 effect timing (host render; scheduled interval {} ms)", EFFECT_FRAME_MS);
+    // Typical ring and the worst case: a 519 px ring (annulus clipped by the sidebar).
+    for (label, cx, cy, radius, reach) in [("r150", W / 2, H / 2, 150, EFFECT_REACH), ("r519", 700, 900, 519, 123)] {
+        let params = EffectParams { reach, ..EffectParams::aura() };
+        for el in ["fire", "water", "wind", "earth", "light"] {
+            let ms: Vec<f64> = (0..EFFECT_FRAMES)
+                .map(|f| {
+                    let t = std::time::Instant::now();
+                    effect_frame(&mut fb, cx, cy, radius, el, f, &params);
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            let (max, mean) = (ms.iter().cloned().fold(0.0, f64::max), ms.iter().sum::<f64>() / ms.len() as f64);
+            let (_, _, rw, rh) = effect_dirty_rect(cx, cy, radius, el, &params, false).unwrap();
+            let worst_frame = EFFECT_FRAME_MS as f64 + max;
+            println!("  {label} {el:<5} frames {} interval {} ms render mean {mean:.2} ms max {max:.2} ms worst frame {worst_frame:.1} ms flush {rw}x{rh}", ms.len(), EFFECT_FRAME_MS);
+            assert!(EFFECT_FRAMES >= 2 * BASELINE_FRAMES, "P5: {EFFECT_FRAMES} frames < 2x baseline");
+            assert_eq!(EFFECT_FRAMES as u64 * EFFECT_FRAME_MS, BASELINE_TOTAL_MS, "P5: total animation time must equal the baseline");
+            assert!(worst_frame <= MAX_FRAME_MS, "P5: {el} frame {worst_frame:.1} ms > {MAX_FRAME_MS} ms");
+        }
+    }
+    println!("P5 ok: {EFFECT_FRAMES} frames (>= {}) x {EFFECT_FRAME_MS} ms = {} ms total, no frame > {MAX_FRAME_MS} ms", 2 * BASELINE_FRAMES, EFFECT_FRAMES as u64 * EFFECT_FRAME_MS);
+}
+
 fn main() {
+    p5_timing();
     // One 480x480 tile per element, laid out in a row.
     let elements = ["fire", "water", "wind", "earth", "light"];
     let tile = 460;
