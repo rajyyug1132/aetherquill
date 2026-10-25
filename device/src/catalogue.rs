@@ -235,6 +235,36 @@ mod tests {
         assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     }
 
+    /// Diagnostic, meant for the tablet: how long recognition blocks the UI
+    /// after each pen-up (main.rs runs it synchronously), per catalogue spell.
+    /// `device-<hash> --ignored recognition_timing --nocapture`
+    #[test]
+    #[ignore = "timing diagnostic; no assertion"]
+    fn recognition_timing() {
+        let dictionary = load_dictionary();
+        for spell in load() {
+            let mut raw: Vec<RawStroke> = Vec::new();
+            let mut previous_ring: Option<Ring> = None;
+            let (mut total, mut worst) = (0.0f64, 0.0f64);
+            for (i, stroke) in spell.screen_strokes().iter().enumerate() {
+                raw.push(RawStroke { id: format!("s{}", i + 1), points: stroke.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect() });
+                let t0 = std::time::Instant::now();
+                let result = classify_drawing(&raw, previous_ring.as_ref(), &dictionary, "timing", &INPUT, &RING, &LAYERS, &RECOGNITION);
+                let _ = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                previous_ring = result.ring.found.then_some(result.ring);
+                total += ms;
+                worst = worst.max(ms);
+            }
+            println!("timing {}: {} strokes, total {:.0} ms, worst stroke {:.0} ms, last stroke {:.0} ms", spell.id, raw.len(), total, worst, {
+                let t0 = std::time::Instant::now();
+                let r = classify_drawing(&raw, None, &dictionary, "timing", &INPUT, &RING, &LAYERS, &RECOGNITION);
+                let _ = compile_spell(&r.glyph_ast, &COMPILER, &EFFECT_SIZE);
+                t0.elapsed().as_secs_f64() * 1000.0
+            });
+        }
+    }
+
     #[test]
     fn catalogue_has_the_four_spells() {
         let ids: Vec<String> = load().into_iter().map(|s| s.id).collect();
@@ -253,6 +283,19 @@ mod tests {
             // Exact JS signature: same manifestation strengths, force, spread,
             // duration, direction, quality, stability.
             assert_eq!(ir.signature, e.signature, "{}", spell.id);
+
+            // On the device a pick's queued recognitions collapse into one run
+            // over every stroke with no previous ring (main.rs Recognizer):
+            // that must match JS exactly too.
+            let raw: Vec<RawStroke> = spell
+                .screen_strokes()
+                .iter()
+                .enumerate()
+                .map(|(i, s)| RawStroke { id: format!("s{}", i + 1), points: s.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect() })
+                .collect();
+            let once = classify_drawing(&raw, None, &load_dictionary(), "test", &INPUT, &RING, &LAYERS, &RECOGNITION);
+            let once = compile_spell(&once.glyph_ast, &COMPILER, &EFFECT_SIZE);
+            assert_eq!(once.signature, e.signature, "{} (one-shot)", spell.id);
         }
     }
 

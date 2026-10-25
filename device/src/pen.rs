@@ -91,14 +91,23 @@ impl PenDecoder {
 }
 
 /// Screen px -> window px. Identity until learned (fullscreen window at the
-/// origin, the normal AppLoad case); each (digitizer touch-down, AppLoad
-/// pen-press) pair re-learns the offset. AppLoad draws our 1404x1872 buffer
-/// unscaled, so there's no scale term.
+/// origin, the normal AppLoad case); (digitizer touch-down, AppLoad pen-press)
+/// pairs re-learn the offset. AppLoad draws our 1404x1872 buffer unscaled, so
+/// there's no scale term.
+///
+/// A pair can be mismatched (AppLoad's press from a different, rapid stroke):
+/// the RM2's pen.log on 2026-10-25 had 50 pairs within 1 px of identity and one
+/// 137 px off. So a pair only nudges the offset when it agrees with it; a new
+/// offset is adopted only once two consecutive pairs agree on it.
 #[derive(Default)]
 pub struct PenCalibration {
     ox: f64,
     oy: f64,
+    candidate: Option<(f64, f64)>,
 }
+
+/// Pairs closer than this (px) agree; the RM2 shows <= 1 px of rounding.
+const AGREE_PX: f64 = 8.0;
 
 impl PenCalibration {
     pub fn map(&self, x: f64, y: f64) -> (f64, f64) {
@@ -106,7 +115,14 @@ impl PenCalibration {
     }
 
     pub fn add_pair(&mut self, screen: (f64, f64), window: (f64, f64)) {
-        (self.ox, self.oy) = (window.0 - screen.0, window.1 - screen.1);
+        let offset = (window.0 - screen.0, window.1 - screen.1);
+        let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).hypot(a.1 - b.1) <= AGREE_PX;
+        if near(offset, (self.ox, self.oy)) || self.candidate.is_some_and(|c| near(offset, c)) {
+            (self.ox, self.oy) = offset;
+            self.candidate = None;
+        } else {
+            self.candidate = Some(offset);
+        }
     }
 }
 
@@ -224,9 +240,22 @@ mod tests {
     fn calibration_starts_identity_and_learns_an_offset() {
         let mut c = PenCalibration::default();
         assert_eq!(c.map(100.0, 200.0), (100.0, 200.0));
+        // A different window offset needs two agreeing pairs.
         c.add_pair((500.0, 700.0), (480.0, 640.0));
-        assert_eq!(c.map(500.0, 700.0), (480.0, 640.0));
-        assert_eq!(c.map(600.0, 800.0), (580.0, 740.0));
+        assert_eq!(c.map(500.0, 700.0), (500.0, 700.0), "one pair is only a candidate");
+        c.add_pair((300.0, 300.0), (281.0, 241.0));
+        assert_eq!(c.map(600.0, 800.0), (581.0, 741.0));
+    }
+
+    #[test]
+    fn calibration_ignores_a_single_mismatched_pair() {
+        // From the RM2's pen.log: identity +-1 px, then one pair 137 px off.
+        let mut c = PenCalibration::default();
+        c.add_pair((776.0, 424.0), (775.0, 424.0));
+        c.add_pair((539.0, 744.0), (625.0, 638.0));
+        assert_eq!(c.map(514.0, 831.0), (513.0, 831.0), "outlier must not move the ink");
+        c.add_pair((514.0, 831.0), (514.0, 831.0));
+        assert_eq!(c.map(10.0, 10.0), (10.0, 10.0));
     }
 
     #[test]

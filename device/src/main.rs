@@ -10,6 +10,7 @@
 //! Tap UNDO / CLEAR boxes in the top chrome strip. Close the window from
 //! AppLoad to exit (server disconnect ends the event loop).
 
+use std::sync::mpsc;
 use std::time::Instant;
 
 use recognizer::config::{COMPILER, EFFECT_SIZE, INPUT, LAYERS, RECOGNITION, RING};
@@ -216,7 +217,8 @@ fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: 
     fb.fill_rect(0, 0, W, H, WHITE);
     draw_sidebar(fb, erase_mode);
     fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
-    let ring_ids: &[String] = ring.filter(|r| r.complete).map_or(&[], |r| &r.stroke_ids);
+    let ring = ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)));
+    let ring_ids: &[String] = ring.map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
         if ring_ids.contains(&stroke.id) {
             continue;
@@ -225,7 +227,7 @@ fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: 
             fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
         }
     }
-    if let Some(r) = ring.filter(|r| r.complete) {
+    if let Some(r) = ring {
         fb.circle(
             (r.center.x / CANVAS_SCALE) as i32,
             (r.center.y / CANVAS_SCALE) as i32,
@@ -242,13 +244,68 @@ struct SpellOutcome {
     spell: SpellIr,
 }
 
-fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
+fn recognize(dictionary: &Dictionary, raw: &[RawStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
     let t0 = Instant::now();
-    let raw = to_raw_strokes(strokes);
-    let result = classify_drawing(&raw, previous_ring, dictionary, env!("CARGO_PKG_VERSION"), &INPUT, &RING, &LAYERS, &RECOGNITION);
-    eprintln!("recognize: {} strokes in {}ms", strokes.len(), t0.elapsed().as_millis());
+    let result = classify_drawing(raw, previous_ring, dictionary, env!("CARGO_PKG_VERSION"), &INPUT, &RING, &LAYERS, &RECOGNITION);
+    eprintln!("recognize: {} strokes in {}ms", raw.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
     SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }
+}
+
+/// Complete-ring stroke ids that redraw_all would snap right now.
+fn snapped_ids(ring: Option<&Ring>, strokes: &[ScreenStroke]) -> Vec<String> {
+    ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)))
+        .map(|r| r.stroke_ids.clone())
+        .unwrap_or_default()
+}
+
+type RecognitionJob = (u64, Vec<RawStroke>, Option<Ring>);
+
+/// Recognition on a worker thread. On the RM2 one classify + compile takes
+/// ~0.35 s (~1 s with a sketchy multi-segment ring), measured on the tablet
+/// 2026-10-25; on the event loop that froze the ink after every pen-up. Each
+/// request carries the whole stroke set; the worker skips requests a newer one
+/// supersedes, and the loop applies only the newest generation's result.
+struct Recognizer {
+    jobs: mpsc::Sender<RecognitionJob>,
+    results: mpsc::Receiver<(u64, SpellOutcome)>,
+    generation: u64,
+}
+
+impl Recognizer {
+    fn spawn() -> Self {
+        let (jobs, job_rx) = mpsc::channel::<RecognitionJob>();
+        let (result_tx, results) = mpsc::channel();
+        std::thread::spawn(move || {
+            let dictionary = load_dictionary();
+            while let Ok(mut job) = job_rx.recv() {
+                while let Ok(newer) = job_rx.try_recv() {
+                    job = newer;
+                }
+                let (generation, raw, previous_ring) = job;
+                if result_tx.send((generation, recognize(&dictionary, &raw, previous_ring.as_ref()))).is_err() {
+                    return;
+                }
+            }
+        });
+        Recognizer { jobs, results, generation: 0 }
+    }
+
+    fn request(&mut self, strokes: &[ScreenStroke], previous_ring: Option<Ring>) {
+        self.generation += 1;
+        let _ = self.jobs.send((self.generation, to_raw_strokes(strokes), previous_ring));
+    }
+
+    /// The latest request's result, once it has arrived; stale ones are dropped.
+    fn latest(&self) -> Option<SpellOutcome> {
+        let mut newest = None;
+        while let Ok((generation, outcome)) = self.results.try_recv() {
+            if generation == self.generation {
+                newest = Some(outcome);
+            }
+        }
+        newest
+    }
 }
 
 /// Spell activation: plays the per-element effect animation (rising flames,
@@ -321,7 +378,7 @@ fn main() {
     // (fbmanagement.cpp safetyWaitForEventLoopToCatchUp), stalling all our
     // updates — toggling it per stroke froze the start of every stroke.
     let _ = client.set_refresh_mode(qtfb::REFRESH_MODE_UFAST);
-    let dictionary = load_dictionary();
+    let mut recognizer = Recognizer::spawn();
 
     // Owned pixel view for the lifetime of the app (single-threaded).
     let px: &'static mut [u16] = unsafe { std::mem::transmute(client.pixels()) };
@@ -384,22 +441,40 @@ fn main() {
     // drag the freshly inked strokes: ignore canvas touch until it lifts.
     let mut touch_until_lift_ignored = false;
 
-    // Pen-up commit: keep the stroke, re-recognize, snap the ring once per
-    // newly completed ring, show feedback. Shared by pen release, the silence
-    // commit and the Spell Catalogue, which inks through this same path.
+    // Pen-up commit: keep the stroke and queue recognition. Shared by pen
+    // release, the silence commit and the Spell Catalogue, which inks through
+    // this same path.
     macro_rules! commit_stroke {
         ($points:expr) => {{
             strokes.push(ScreenStroke { id: format!("s{next_id}"), points: $points });
             next_id += 1;
             redo.clear();
-            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
+            recognizer.request(&strokes, previous_ring.clone());
+        }};
+    }
+
+    // A recognition result: snap the ring once per newly completed ring, show
+    // feedback (and the activation animation when the signature is new).
+    macro_rules! apply_outcome {
+        ($outcome:expr) => {{
+            let outcome = $outcome;
             previous_ring = outcome.ring.clone();
-            let ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
+            let ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
             if ring_ids != snapped_ring_ids {
                 snapped_ring_ids = ring_ids;
                 redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
             }
             render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+        }};
+    }
+
+    // The page changed outside the pen-up path (undo/redo/clear/erase/drag/
+    // resume): repaint now, recognize in the background.
+    macro_rules! repaint_and_recognize {
+        ($previous_ring:expr) => {{
+            snapped_ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
+            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            recognizer.request(&strokes, $previous_ring);
         }};
     }
 
@@ -423,10 +498,8 @@ fn main() {
             current.clear();
             dirty_rect = None;
             moving = None;
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-            // Restores the status line; the signature is unchanged, so no replay.
-            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
-            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+            // The result restores the status line; same signature, so no replay.
+            repaint_and_recognize!(previous_ring.clone());
         }
 
         let mut events = match client.drain_events() {
@@ -545,11 +618,7 @@ fn main() {
                     if erase_mode {
                         if erased_any {
                             erased_any = false;
-                            let outcome = recognize(&dictionary, &strokes, None);
-                            previous_ring = outcome.ring.clone();
-                            snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-                            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+                            repaint_and_recognize!(None);
                         }
                         continue;
                     }
@@ -691,11 +760,7 @@ fn main() {
                         }
                         _ => continue,
                     }
-                    let outcome = recognize(&dictionary, &strokes, None);
-                    previous_ring = outcome.ring.clone();
-                    snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-                    render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+                    repaint_and_recognize!(None);
                 }
                 _ => {}
             }
@@ -710,6 +775,14 @@ fn main() {
             }
         }
 
+        // Recognition results land between strokes, never mid-stroke (a ring
+        // snap repaints the page and would wipe live ink).
+        if !pen_down {
+            if let Some(outcome) = recognizer.latest() {
+                apply_outcome!(outcome);
+            }
+        }
+
         if touch_until_lift_ignored && last_touch.elapsed().as_millis() > 400 {
             touch_until_lift_ignored = false;
         }
@@ -717,11 +790,10 @@ fn main() {
         // Finger lifted mid-drag: commit the move, re-recognize.
         if moving.is_some() && last_touch.elapsed().as_millis() > 400 {
             moving = None;
-            let outcome = recognize(&dictionary, &strokes, previous_ring.as_ref());
-            previous_ring = outcome.ring.clone();
-            snapped_ring_ids = previous_ring.as_ref().filter(|r| r.complete).map(|r| r.stroke_ids.clone()).unwrap_or_default();
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+            // A dragged ring stroke makes the old snapped circle wrong: drop it
+            // until the result re-snaps.
+            previous_ring = None;
+            repaint_and_recognize!(None);
         }
 
         // Hold-to-snap: pen still on the panel (events keep arriving inside
