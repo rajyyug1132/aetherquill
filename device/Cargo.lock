@@ -9,6 +9,7 @@ dependencies = [
  "font8x8",
  "libc",
  "recognizer",
+ "serde_json",
 ]
 
 [[package]]

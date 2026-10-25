@@ -2,6 +2,8 @@
 //! activation effect frames. Pure pixel math, no qtfb/device deps — so the
 //! effects can be rendered and eyeballed on any host (see examples/effect_preview).
 
+use crate::spell_view::{EffectParams, Overlay};
+
 pub const W: i32 = 1404;
 pub const H: i32 = 1872;
 
@@ -130,9 +132,10 @@ pub fn noise(seed: u32) -> f64 {
 /// from the upstream renderer's particle systems into 1-bit e-ink line art:
 /// fire=rising flicker, water=ripples+droplets, wind=curling swirl,
 /// earth=rising debris, light=radiant beams.
-pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f: i32) {
+pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f: i32, params: &EffectParams) {
     let tau = std::f64::consts::TAU;
-    let reach = EFFECT_REACH;
+    let reach = params.reach;
+    let w = params.weight;
     let pad = radius + reach;
     fb.clear_seal_annulus(cx, cy, radius, pad);
 
@@ -151,8 +154,8 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
                 let am = a + flick;
                 let (xm, ym) = (cx + (am.cos() * (r0 + h * 0.5)) as i32, cy + (am.sin() * (r0 + h * 0.5)) as i32);
                 let (xt, yt) = (cx + (a.cos() * (r0 + h)) as i32, cy + (a.sin() * (r0 + h)) as i32);
-                fb.line(x0, y0, xm, ym, 4, BLACK);
-                fb.line(xm, ym, xt, yt, 2, BLACK);
+                fb.line(x0, y0, xm, ym, 4 + w, BLACK);
+                fb.line(xm, ym, xt, yt, 2 + w, BLACK);
             }
         }
         // Water: concentric ripples expand outward, droplets arc and fall
@@ -160,14 +163,14 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         "water" => {
             for k in 0..3 {
                 let rr = radius + 20 + (f * 16 + k * 30) % reach;
-                fb.circle(cx, cy, rr, 2, BLACK);
+                fb.circle(cx, cy, rr, 2 + w, BLACK);
             }
             for i in 0..6 {
                 let a = tau * i as f64 / 6.0;
                 let fall = (f as f64 * 14.0 + noise(i) * 20.0) % reach as f64;
                 let dx = cx + (a.cos() * (radius + 30) as f64) as i32;
                 let dy = cy + (a.sin() * (radius + 30) as f64) as i32 + fall as i32;
-                fb.circle(dx, dy, 4, 2, BLACK);
+                fb.circle(dx, dy, 4, 2 + w, BLACK);
             }
         }
         // Wind: curling streaks orbit and rotate (upstream: velocity curl spins
@@ -184,7 +187,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
                     let a = base + t * 1.5; // curl
                     let r = (radius + 20) as f64 + t * reach as f64 * 0.8;
                     let p = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
-                    fb.line(prev.0, prev.1, p.0, p.1, 3, BLACK);
+                    fb.line(prev.0, prev.1, p.0, p.1, 3 + w, BLACK);
                     prev = p;
                 }
             }
@@ -202,7 +205,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
                     .collect();
                 for k in 0..4 {
                     let (p, q) = (pts[k], pts[(k + 1) % 4]);
-                    fb.line(p.0, p.1, q.0, q.1, 2, BLACK);
+                    fb.line(p.0, p.1, q.0, q.1, 2 + w, BLACK);
                 }
             }
             for i in 0..8 {
@@ -225,17 +228,96 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
                 fb.line(
                     cx + (a.cos() * r0) as i32, cy + (a.sin() * r0) as i32,
                     cx + (a.cos() * r1) as i32, cy + (a.sin() * r1) as i32,
-                    if i % 2 == 0 { 3 } else { 1 },
+                    (if i % 2 == 0 { 3 } else { 1 }) + w,
                     BLACK,
                 );
             }
         }
     }
+    draw_overlay(fb, cx, cy, radius, f, params);
 }
 
-/// Final settle frame: clear the effect, leave the bold seal + element name.
-pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str) {
-    let pad = radius + EFFECT_REACH;
+/// Sign manifestation drawn over the element effect, inside the same annulus
+/// (never inside the seal, so the sigil survives). Grows over the frames.
+fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &EffectParams) {
+    let grow = (f + 1) as f64 / EFFECT_FRAMES as f64;
+    let reach = params.reach as f64;
+    let r0 = (radius + 14) as f64;
+    let w = params.weight;
+    match params.overlay {
+        Overlay::Aura => {}
+        // Pillar: two rails + rungs leaving the seal along the spell direction.
+        Overlay::Column { dir: (dx, dy) } => {
+            let len = reach * (0.5 + 0.5 * params.strength) * grow;
+            let (nx, ny) = (-dy, dx);
+            let half = radius as f64 * 0.35;
+            for side in [-1.0, 1.0] {
+                let (ox, oy) = (nx * half * side, ny * half * side);
+                let start = (cx as f64 + dx * r0 + ox, cy as f64 + dy * r0 + oy);
+                let end = (start.0 + dx * len, start.1 + dy * len);
+                fb.line(start.0 as i32, start.1 as i32, end.0 as i32, end.1 as i32, 3 + w, BLACK);
+            }
+            let rungs = (len / 28.0) as i32;
+            for k in 1..=rungs {
+                let t = r0 + k as f64 * 28.0;
+                let (mx, my) = (cx as f64 + dx * t, cy as f64 + dy * t);
+                fb.line((mx - nx * half) as i32, (my - ny * half) as i32, (mx + nx * half) as i32, (my + ny * half) as i32, 1 + w, BLACK);
+            }
+        }
+        // Chevrons stacked above the seal; the stack climbs further the weaker
+        // upstream gravity is.
+        Overlay::Levitation { lift } => {
+            let count = 2 + (params.strength * 3.0).round() as i32;
+            let climb = reach * lift * grow;
+            for k in 0..count {
+                let y = cy as f64 - r0 - 10.0 - k as f64 * 22.0 - climb;
+                if y < (cy - radius) as f64 - reach {
+                    break;
+                }
+                let half = 26.0 - k as f64 * 3.0;
+                let (x, y) = (cx, y as i32);
+                fb.line(x - half as i32, y + 12, x, y, 2 + w, BLACK);
+                fb.line(x, y, x + half as i32, y + 12, 2 + w, BLACK);
+            }
+        }
+        // Spokes from the outer edge, each aimed at the convergence point and
+        // stopped at the seal; tighter rigidity = more spokes.
+        Overlay::Convergence { point: (px, py), rigidity } => {
+            let target = (cx as f64 + px * radius as f64, cy as f64 + py * radius as f64);
+            let spokes = 6 + (rigidity * 10.0).round() as i32;
+            let tau = std::f64::consts::TAU;
+            for i in 0..spokes {
+                let a = tau * i as f64 / spokes as f64;
+                let outer = (cx as f64 + a.cos() * (r0 + reach * 0.9), cy as f64 + a.sin() * (r0 + reach * 0.9));
+                let (vx, vy) = (target.0 - outer.0, target.1 - outer.1);
+                let dist = vx.hypot(vy);
+                // Travel toward the target but stop short of the seal.
+                let travel = ((reach * 0.9) * grow).min(dist - radius as f64 * 0.2);
+                if travel <= 0.0 {
+                    continue;
+                }
+                let end = (outer.0 + vx / dist * travel, outer.1 + vy / dist * travel);
+                let end_r = (end.0 - cx as f64).hypot(end.1 - cy as f64);
+                let end = if end_r < r0 { (cx as f64 + (end.0 - cx as f64) / end_r * r0, cy as f64 + (end.1 - cy as f64) / end_r * r0) } else { end };
+                fb.line(outer.0 as i32, outer.1 as i32, end.0 as i32, end.1 as i32, 2 + w, BLACK);
+            }
+        }
+    }
+}
+
+/// Final settle frame: clear the effect, leave the bold seal + element name
+/// (and the sign manifestation under it, when there is one).
+pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
+    let pad = radius + params.reach;
     fb.clear_seal_annulus(cx, cy, radius, pad);
     fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
+    let label = match params.overlay {
+        Overlay::Aura => "",
+        Overlay::Column { .. } => "column",
+        Overlay::Levitation { .. } => "levitation",
+        Overlay::Convergence { .. } => "convergence",
+    };
+    if !label.is_empty() {
+        fb.text(cx - label.len() as i32 * 3 * 8 / 2, cy + radius + 96, label, 3, BLACK);
+    }
 }

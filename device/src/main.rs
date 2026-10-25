@@ -18,16 +18,18 @@ use recognizer::symbol_recognizer::Dictionary;
 use recognizer::drawing_classifier::classify_drawing;
 use recognizer::geometry::Point;
 use recognizer::ring_detector::Ring;
-use recognizer::spell_builder::compile_spell;
+use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
 
 mod grimoire;
 mod qtfb;
 mod render;
 mod shapes;
+mod spell_view;
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
+use spell_view::{status_lines, EffectParams};
 
 use qtfb::{QtfbClient, RM2_HEIGHT, RM2_WIDTH};
 
@@ -180,14 +182,7 @@ fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: 
 
 struct SpellOutcome {
     ring: Option<Ring>,
-    status: String,
-    element: Option<String>,
-    valid: bool,
-    active: bool,
-    quality: f64,
-    stability: f64,
-    warning: Option<String>,
-    signature: String,
+    spell: SpellIr,
 }
 
 fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
@@ -196,50 +191,33 @@ fn recognize(dictionary: &Dictionary, strokes: &[ScreenStroke], previous_ring: O
     let result = classify_drawing(&raw, previous_ring, dictionary, "0.2.0", &INPUT, &RING, &LAYERS, &RECOGNITION);
     eprintln!("recognize: {} strokes in {}ms", strokes.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
-    SpellOutcome {
-        ring: if result.ring.found { Some(result.ring) } else { None },
-        status: spell.status,
-        element: spell.element,
-        valid: spell.valid,
-        active: spell.active,
-        quality: spell.quality,
-        stability: spell.stability,
-        warning: spell.warnings.first().map(|w| w.as_str().to_string()),
-        signature: spell.signature,
-    }
+    SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }
 }
 
 /// Spell activation: plays the per-element effect animation (rising flames,
 /// ripples, curling wind, rising earth, radiant light — ported from the
 /// upstream particle renderer into 1-bit e-ink frames in `render::effect_frame`).
 /// Each frame refreshes only the annulus around the seal, so the sigil inside
-/// is untouched and the effect genuinely moves.
-fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str) {
-    let pad = radius + render::EFFECT_REACH;
+/// is untouched and the effect genuinely moves. Modifying signs shape it via
+/// `params` (reach/weight/overlay from the compiled SpellIr — spell_view.rs).
+fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
+    let pad = radius + params.reach;
     let flush = |client: &QtfbClient, ms: u64| {
         let _ = client.update_partial((cx - pad).max(0), (cy - pad).max(0), pad * 2, pad * 2);
         std::thread::sleep(std::time::Duration::from_millis(ms));
     };
     for f in 0..EFFECT_FRAMES {
-        effect_frame(fb, cx, cy, radius, element, f);
+        effect_frame(fb, cx, cy, radius, element, f, params);
         flush(client, 80);
     }
-    effect_settle(fb, cx, cy, radius, element);
+    effect_settle(fb, cx, cy, radius, element, params);
     flush(client, 60);
 }
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
-    let line1 = match &outcome.element {
-        Some(element) if outcome.valid => format!(
-            "{} - {}  q{:.0}% s{:.0}%",
-            outcome.status,
-            element,
-            outcome.quality * 100.0,
-            outcome.stability * 100.0
-        ),
-        _ => outcome.status.clone(),
-    };
-    draw_status(fb, client, &line1, outcome.warning.as_deref().unwrap_or(""));
+    let spell = &outcome.spell;
+    let (line1, line2) = status_lines(spell);
+    draw_status(fb, client, &line1, &line2);
 
     let Some(ring) = &outcome.ring else { return };
     let cx = (ring.center.x / CANVAS_SCALE) as i32;
@@ -248,16 +226,18 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
 
     fb.circle(cx, cy, radius + 6, 2, GRAY);
 
-    let activated = outcome.active && outcome.signature != *last_activation;
+    let activated = spell.active && spell.signature != *last_activation;
+    let params = EffectParams::from_ir(spell);
     if activated {
-        *last_activation = outcome.signature.clone();
-        if let Some(element) = &outcome.element {
-            grimoire::log_spell(element, outcome.quality, outcome.stability, &outcome.signature);
-            animate_activation(fb, client, cx, cy, radius, element);
+        *last_activation = spell.signature.clone();
+        if let Some(element) = &spell.element {
+            grimoire::log_spell(element, spell.quality, spell.stability, &spell.signature);
+            animate_activation(fb, client, cx, cy, radius, element, &params);
         }
     }
 
-    let pad = 90;
+    // Covers the settle frame's labels and the widest reach a sign can give.
+    let pad = 90.max(params.reach);
     let _ = client.update_partial(
         (cx - radius - pad).max(0),
         (cy - radius - pad).max(0),

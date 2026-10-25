@@ -3,3 +3,4 @@
 //! anywhere so `cargo test --lib` can emulate pen input off-device.
 pub mod render;
 pub mod shapes;
+pub mod spell_view;

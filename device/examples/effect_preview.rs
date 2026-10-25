@@ -1,8 +1,11 @@
 //! Host preview of the spell activation effects. Renders a peak-frame of each
 //! element (plus the settle frame) into a single PPM so the silhouettes can be
 //! eyeballed without a device. Run: `cargo run --example effect_preview`.
+//! Row 1: the five elements, no signs. Row 2: fire with each modifying sign
+//! overlay (column, levitation, convergence) at typical upstream values.
 
-use device::render::{effect_frame, effect_settle, Fb, BLACK, H, W};
+use device::render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_REACH, H, W};
+use device::spell_view::{EffectParams, Overlay};
 
 fn main() {
     // One 480x480 tile per element, laid out in a row.
@@ -10,7 +13,7 @@ fn main() {
     let tile = 460;
     let cols = elements.len() as i32;
     let out_w = tile * cols;
-    let out_h = tile;
+    let out_h = tile * 2;
     let mut out = vec![0xffffu16; (out_w * out_h) as usize];
 
     for (col, el) in elements.iter().enumerate() {
@@ -19,7 +22,7 @@ fn main() {
         let mut fb = Fb { px: &mut px };
         let (cx, cy, radius) = (W / 2, H / 2, 150);
         // Peak frame (4 of 6) shows the effect near full extent.
-        effect_frame(&mut fb, cx, cy, radius, el, 4);
+        effect_frame(&mut fb, cx, cy, radius, el, 4, &EffectParams::aura());
         // Draw the sigil-ish marker + a name from settle onto the same buffer edge.
         let _ = el;
 
@@ -37,11 +40,33 @@ fn main() {
         }
     }
 
+    let signs = [
+        Overlay::Column { dir: (0.0, -1.0) },
+        Overlay::Levitation { lift: 0.26 },
+        Overlay::Convergence { point: (0.0, 0.34), rigidity: 0.61 },
+    ];
+    for (col, overlay) in signs.into_iter().enumerate() {
+        let mut px = vec![0xffffu16; (W * H) as usize];
+        let mut fb = Fb { px: &mut px };
+        let (cx, cy, radius) = (W / 2, H / 2, 150);
+        let params = EffectParams { reach: EFFECT_REACH + 30, weight: 1, strength: 0.65, overlay };
+        effect_frame(&mut fb, cx, cy, radius, "fire", 4, &params);
+        let half = tile / 2;
+        for ty in 0..tile {
+            for tx in 0..tile {
+                let (sx, sy) = (cx - half + tx, cy - half + ty);
+                if (0..W).contains(&sx) && (0..H).contains(&sy) {
+                    out[((ty + tile) * out_w + col as i32 * tile + tx) as usize] = px[(sy * W + sx) as usize];
+                }
+            }
+        }
+    }
+
     // Also render the settle frame of "fire" in the corner as a sanity check of text.
     {
         let mut px = vec![0xffffu16; (W * H) as usize];
         let mut fb = Fb { px: &mut px };
-        effect_settle(&mut fb, W / 2, H / 2, 150, "fire");
+        effect_settle(&mut fb, W / 2, H / 2, 150, "fire", &EffectParams::aura());
         // (not composited; existence proves it compiles/runs)
         let _ = fb.text(0, 0, "", 1, BLACK);
     }
