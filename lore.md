@@ -6,9 +6,9 @@ and no artwork is included.
 
 - **Wiki:** [Witch Hat Atelier Wiki](https://witch-hat-atelier.fandom.com/wiki/Spells),
   read on 2026-10-25 in the built-in browser. The plain fetcher got HTTP 402.
-  Pages read: *Spells*, *Signs Explained*, *Light Beam* and *Grasping Wind*.
-  *Sylph Shoes Seal* and *Wind Wall* were seen only in the wiki's search-result
-  summaries, not opened.
+  Pages read: *Spells*, *Signs Explained*, *Light Beam*, *Grasping Wind* and
+  *Wind Wall*. *Sylph Shoes Seal* was seen only in the wiki's search-result
+  summary, not opened.
 - **Vendored dictionaries:** read-only ground truth in `service/vendor/wha/src/dictionary/`.
   They hold the sigil and sign templates (`sigils.json`, `signs.json`) and two
   named samples (`sample-spells.json`).
@@ -67,7 +67,12 @@ rebuild on 2026-10-25.
 
 **Not a canon spell.** No spell on the wiki pairs wind with convergence alone:
 - *Sylph Shoes Seal* alternates convergence and levitation keystones around a wind sigil.
-- *Wind Wall* mixes convergence with inverted column signs and one more sign.
+- *Wind Wall* (Alaira's spell, debut manga ch. 28; checked 2026-10-25 as a
+  possible C3) raises a ring of air that's hard to push through. Its glyph
+  combines the air sigil with three sign types: inverted columns on one side,
+  convergence on the other, and a semicircular sign near the sigil (ch. 28,
+  p. 19). The semicircular sign isn't in the vendored dictionary, so a faithful
+  Wind Wall can't be drawn here. The owner kept Converging Wind.
 - *Grasping Wind* (manga ch. 14) pulls air toward the glyph, but the wiki lists it
   under **Pull** signs, a different sign that is not in the vendored dictionary.
 
