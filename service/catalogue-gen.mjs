@@ -1,4 +1,4 @@
-// Generates device/assets/catalogue.json: the four Spell Catalogue entries the
+// Generates device/assets/catalogue.json: the Spell Catalogue entries the
 // tablet can ink with one tap. Every entry is run through the REAL vendored JS
 // pipeline here and its result recorded under `expected`, so the Rust side
 // (device/src/catalogue.rs tests) must reproduce it exactly. Regenerate with:
@@ -102,6 +102,17 @@ const entries = [
   { id: "water-orb", name: "Water Orb", line: "Water with levitation signs: water floats as an orb.", sigil: "water", sign: "levitation", strokes: synthesized("water", "levitation") },
   { id: "converging-wind", name: "Converging Wind", line: "Wind with a convergence sign: air focused to one point.", sigil: "wind-directs-air", sign: "convergence", strokes: synthesized("wind-directs-air", "convergence") },
   { id: "light-beam", name: "Light Beam", line: "Light with a column sign: a beam rises from the glyph.", sigil: "light", sign: "column", strokes: synthesized("light", "column") },
+  // Batch 2: the rest of sigil x sign (fire/water/wind-directs-air/light x
+  // column/levitation/convergence), all template-built. Canon status per name
+  // is in lore.md. Earth is left out (ring-earth is ambiguous upstream).
+  { id: "pyreball-seal", name: "Pyreball Seal", line: "Fire with a levitation sign: a ball of flame floats above.", sigil: "fire", sign: "levitation", strokes: synthesized("fire", "levitation") },
+  { id: "watershot-seal", name: "Watershot Seal", line: "Water with a column sign: a stream shoots straight up.", sigil: "water", sign: "column", strokes: synthesized("water", "column") },
+  { id: "skysoaring-seal", name: "Skysoaring Seal", line: "Wind with a levitation sign: thrust that lifts things aloft.", sigil: "wind-directs-air", sign: "levitation", strokes: synthesized("wind-directs-air", "levitation") },
+  { id: "converging-flame", name: "Converging Flame", line: "Fire with a convergence sign: flame drawn onto one point.", sigil: "fire", sign: "convergence", strokes: synthesized("fire", "convergence") },
+  { id: "converging-water", name: "Converging Water", line: "Water with a convergence sign: a stream squeezed to one point.", sigil: "water", sign: "convergence", strokes: synthesized("water", "convergence") },
+  { id: "wind-pillar", name: "Wind Pillar", line: "Wind with a column sign: air driven straight up.", sigil: "wind-directs-air", sign: "column", strokes: synthesized("wind-directs-air", "column") },
+  { id: "floating-light", name: "Floating Light", line: "Light with a levitation sign: a glow hovers over the glyph.", sigil: "light", sign: "levitation", strokes: synthesized("light", "levitation") },
+  { id: "converging-light", name: "Converging Light", line: "Light with a convergence sign: light focused to one point.", sigil: "light", sign: "convergence", strokes: synthesized("light", "convergence") },
 ];
 
 const failures = [];
