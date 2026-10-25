@@ -11,6 +11,12 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 target=armv7-unknown-linux-musleabihf
 name="aetherquill-$version"
 
+crate_version=$(sed -n 's/^version = "\(.*\)"//p' "$root/device/Cargo.toml" | head -n1)
+if [ "$version" != "$crate_version" ]; then
+    echo "make-bundle: version $version != device/Cargo.toml $crate_version — bump the crate or fix the tag" >&2
+    exit 1
+fi
+
 cargo build --release --target "$target" --manifest-path "$root/device/Cargo.toml" --bin aetherquill
 
 stage="$root/dist/$name"

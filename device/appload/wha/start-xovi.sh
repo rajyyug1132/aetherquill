@@ -1,9 +1,10 @@
 #!/bin/sh
 # start-xovi.sh — bring xovi (and so AppLoad/Aetherquill) up after a reboot.
 #
-# Lives at /home/root/wha/start-xovi.sh. Touches nothing outside /home/root:
-# it only runs xovi's own /home/root/xovi/start, and only when xochitl hasn't
-# already got xovi loaded — safe to run twice. Run it by hand over SSH after
+# Lives at /home/root/wha/start-xovi.sh. Writes nothing itself: it only runs
+# xovi's own /home/root/xovi/start (Vellum-installed; what that does is
+# xovi's business), and only when xochitl hasn't already got xovi loaded —
+# safe to run twice. Run it by hand over SSH after
 # each boot:
 #     ssh root@10.11.99.1 /home/root/wha/start-xovi.sh
 #
@@ -20,11 +21,12 @@ if [ ! -x "$XOVI_START" ]; then
     exit 1
 fi
 
-pid=$(pidof xochitl 2>/dev/null || true)
-if [ -n "$pid" ] && grep -q xovi.so "/proc/$pid/maps" 2>/dev/null; then
-    echo "start-xovi: xovi already loaded in xochitl (pid $pid) — nothing to do"
-    exit 0
-fi
+for pid in $(pidof xochitl 2>/dev/null || true); do
+    if grep -q xovi.so "/proc/$pid/maps" 2>/dev/null; then
+        echo "start-xovi: xovi already loaded in xochitl (pid $pid) — nothing to do"
+        exit 0
+    fi
+done
 
 echo "start-xovi: starting xovi (the screen will flicker while xochitl reloads)"
 exec "$XOVI_START"

@@ -46,7 +46,7 @@ Self-paced dynamic loop. The loop ENDS when: every task is checked, a
 - [x] `spellBuilder` → `recognizer/src/spell_builder.rs`
 - [x] `dictionaries` — embed `sigils.json`/`signs.json` via `include_str!` + serde; parse once at startup
 - [x] `end-to-end` — Rust test: every `pipeline.json` scenario through `classify_drawing` → `compile_spell`, parity on `glyphAST`/`spellIR` fields
-- [x] `device-crate` — new `device/` crate: UI from `client/src/main.rs` + `recognizer` linked, TCP oracle client deleted. **UNVERIFIED** — `cargo check` fails inside libremarkable's `epoll` dep (Linux-only `libc` constants) before reaching our code at all; needs `cross build --release --target armv7-unknown-linux-gnueabihf` (Docker) or the real ARM toolchain
+- [x] `device-crate` — new `device/` crate: UI from `client/src/main.rs` + `recognizer` linked, TCP oracle client deleted (libremarkable since dropped — see the 2026-07-10 pivot below; builds as a static armv7 musl binary from Windows)
 - [x] `watchdog-grimoire` — home-dir-only watchdog (backgrounded shell loop, not a real systemd unit — see run-on-device.sh comment) + JSONL spell-history log module in `device/`
 - [x] `readme-rewrite` — drop superseded tethered-oracle sections; describe the standalone architecture
 - [x] ⛔ HUMAN: T1 device recon — done 2026-07-09/10 (stock device, OS 3.27.3.0)
