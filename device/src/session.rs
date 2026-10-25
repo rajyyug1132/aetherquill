@@ -108,7 +108,8 @@ impl Session {
         let Some(idx) = self.strokes.iter().position(|s| s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < ERASE_RADIUS)) else {
             return false;
         };
-        let s = self.strokes.remove(idx);
+        let mut s = self.strokes.remove(idx);
+        s.group = None; // an erased stroke is its own undo step, not part of the spell
         self.redo.push(s);
         self.forget_cast_if_empty();
         true
@@ -138,14 +139,14 @@ impl Session {
         true
     }
 
-    /// Spell Catalogue pick: the page is replaced (the first commit clears
+    /// Spell Catalogue pick: the page is replaced (clear() also forgets the last
+    /// cast, so the spell plays every time; the first commit clears
     /// redo, so the old drawing is gone, as when drawing after X), the last
     /// ring is forgotten, then the spell's strokes ink one by one.
     pub fn pick_catalogue(&mut self, spell: Vec<Vec<(f64, f64)>>) {
         self.clear();
         self.previous_ring = None;
         self.snapped_ring_ids.clear();
-        self.last_activation.clear(); // the spell plays every time
         let group = Some(self.next_group);
         self.next_group += 1;
         for points in spell {
@@ -445,7 +446,8 @@ mod tests {
                                 assert!(s.strokes.len() == n - 1 && s.redo.last().unwrap().id == id, "{ctx}");
                                 if rng.below(2) == 0 {
                                     assert!(s.redo(), "{ctx}");
-                                    assert!(sorted(sv(&s.strokes)) == sorted(before.0.clone()) && sv(&s.redo) == before.1, "{ctx}: erase then redo must restore the stroke");
+                                    let ungrouped = |v: Vec<Sv>| v.into_iter().map(|t| (t.0, t.1)).collect::<Vec<_>>();
+                                    assert!(ungrouped(sorted(sv(&s.strokes))) == ungrouped(sorted(before.0.clone())) && ungrouped(sv(&s.redo)) == ungrouped(before.1), "{ctx}: erase then redo must restore the stroke");
                                 }
                             } else {
                                 assert!(state(&s) == before, "{ctx}");
