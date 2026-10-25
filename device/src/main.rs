@@ -25,7 +25,8 @@ use recognizer::stroke_cleaner::RawStroke;
 mod grimoire;
 mod qtfb;
 
-use device::{catalogue, pen, render, resume, shapes, spell_view};
+use device::{catalogue, chrome, pen, render, resume, shapes, spell_view};
+use chrome::{icon_slot, SIDEBAR_W, STATUS_H};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
@@ -108,115 +109,16 @@ fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
         .collect()
 }
 
-// Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
-const SIDEBAR_W: i32 = 110;
-const STATUS_H: i32 = 64;
-const ICON_X: i32 = 13;
-const ICON_W: i32 = 84;
-const ICON_H: i32 = 80;
-const ICON_GAP: i32 = 12;
-
-fn icon_y(slot: i32) -> i32 {
-    15 + slot * (ICON_H + ICON_GAP)
-}
-
-/// Which toolbar slot a sidebar tap lands in (None = gap/below toolbar).
-fn icon_slot(y: i32) -> Option<i32> {
-    let rel = y - 15;
-    if rel < 0 {
-        return None;
-    }
-    let slot = rel / (ICON_H + ICON_GAP);
-    if slot <= 5 && rel % (ICON_H + ICON_GAP) < ICON_H {
-        Some(slot)
-    } else {
-        None
-    }
-}
-
-/// Icon box; active tools invert (black fill, white glyph). Returns glyph color.
-fn icon_frame(fb: &mut Fb, slot: i32, active: bool) -> u16 {
-    let y = icon_y(slot);
-    if active {
-        fb.fill_rect(ICON_X, y, ICON_W, ICON_H, BLACK);
-        WHITE
-    } else {
-        fb.rect_outline(ICON_X, y, ICON_W, ICON_H, 3, BLACK);
-        BLACK
-    }
-}
-
-/// Curved undo/redo arrow: three-quarter arc + arrowhead. `flip` mirrors it.
-fn draw_arrow_icon(fb: &mut Fb, slot: i32, flip: bool) {
-    let fg = icon_frame(fb, slot, false);
-    let y = icon_y(slot);
-    let (cx, cy, r) = (ICON_X + ICON_W / 2, y + ICON_H / 2 + 4, 18);
-    let (a0, a1) = if flip {
-        (-0.75 * std::f64::consts::PI, 0.9 * std::f64::consts::PI)
-    } else {
-        (-0.25 * std::f64::consts::PI, -1.9 * std::f64::consts::PI)
-    };
-    fb.arc(cx, cy, r, a0, a1, 3, fg);
-    let tip = a1;
-    let (tx, ty) = (cx + (tip.cos() * r as f64) as i32, cy + (tip.sin() * r as f64) as i32);
-    let side = if flip { -1.0 } else { 1.0 };
-    let tangent = tip + side * std::f64::consts::FRAC_PI_2;
-    for spread in [-0.5, 0.5] {
-        let a = tangent + spread;
-        fb.line(tx, ty, tx + (a.cos() * 12.0) as i32, ty + (a.sin() * 12.0) as i32, 3, fg);
-    }
-}
-
-fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
-    fb.fill_rect(0, 0, SIDEBAR_W, H, WHITE);
-    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, GRAY);
-
-    // Slot 0: pen - nib pointing down-left.
-    let fg = icon_frame(fb, 0, !erase_mode);
-    let y = icon_y(0);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 56, y + 26, 6, fg);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 22, y + 60, 2, fg);
-
-    // Slot 1: eraser - tilted block with a wipe line under it.
-    let fg = icon_frame(fb, 1, erase_mode);
-    let y = icon_y(1);
-    fb.line(ICON_X + 26, y + 44, ICON_X + 44, y + 26, 14, fg);
-    fb.line(ICON_X + 22, y + 60, ICON_X + 60, y + 60, 2, fg);
-
-    // Slots 2-3: undo / redo arrows.
-    draw_arrow_icon(fb, 2, false);
-    draw_arrow_icon(fb, 3, true);
-
-    // Slot 4: clear - X.
-    let fg = icon_frame(fb, 4, false);
-    let y = icon_y(4);
-    fb.line(ICON_X + 26, y + 24, ICON_X + 58, y + 56, 3, fg);
-    fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
-
-    // Slot 5: Spell Catalogue - a page of listed spells.
-    let fg = icon_frame(fb, 5, false);
-    let y = icon_y(5);
-    fb.rect_outline(ICON_X + 24, y + 16, 36, 48, 3, fg);
-    for row in 0..3 {
-        fb.fill_rect(ICON_X + 31, y + 28 + row * 11, 22, 3, fg);
-    }
-}
-
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
-    let left = SIDEBAR_W + 12;
-    let width = W - left - 12;
-    fb.fill_rect(left, 0, width, STATUS_H - 4, WHITE);
-    fb.text(left + 8, 10, line1, 3, BLACK);
-    fb.text(left + 8, 42, line2, 2, GRAY);
-    let _ = client.update_partial(left, 0, width, STATUS_H);
+    let (x, y, w, h) = chrome::draw_status(fb, line1, line2);
+    let _ = client.update_partial(x, y, w, h);
 }
 
 /// Full redraw. When a complete ring is known, its member strokes render as
 /// one perfect circle (display-only snap — recognition still sees raw points).
 fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>, erase_mode: bool) {
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(fb, erase_mode);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(fb, erase_mode);
     let ring = ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)));
     let ring_ids: &[String] = ring.map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
@@ -389,8 +291,7 @@ fn main() {
     let mut fb = Fb { px };
 
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(&mut fb, false);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(&mut fb, false);
     let _ = client.update_all();
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
@@ -733,8 +634,8 @@ fn main() {
                     match slot {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
-                            draw_sidebar(&mut fb, erase_mode);
-                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(5) + ICON_H + 12);
+                            chrome::draw_sidebar(&mut fb, erase_mode);
+                            let _ = client.update_partial(0, 0, SIDEBAR_W, chrome::toolbar_h());
                             continue;
                         }
                         Some(2) => {
