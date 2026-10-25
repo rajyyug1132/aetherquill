@@ -22,6 +22,7 @@ use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
 
 mod grimoire;
+mod pen;
 mod qtfb;
 mod render;
 mod resume;
@@ -31,6 +32,59 @@ mod spell_view;
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
 use spell_view::{status_lines, EffectParams};
+
+/// Opens the Wacom digitizer read-only and non-blocking (no EVIOCGRAB:
+/// xochitl keeps receiving the pen). None -> fall back to AppLoad's pen events.
+fn open_digitizer() -> Option<(libc::c_int, pen::PenDecoder)> {
+    let name_path = (0..8)
+        .map(|i| format!("/sys/class/input/event{i}/device/name"))
+        .find(|p| std::fs::read_to_string(p).is_ok_and(|n| n.trim() == "Wacom I2C Digitizer"))?;
+    let dev = format!("/dev/input/{}\0", name_path.split('/').nth(4)?);
+    let fd = unsafe { libc::open(dev.as_ptr() as *const libc::c_char, libc::O_RDONLY | libc::O_NONBLOCK) };
+    if fd < 0 {
+        return None;
+    }
+    // EVIOCGABS(axis) = _IOR('E', 0x40 + axis, struct input_absinfo [6 x i32]).
+    let abs_max = |axis: u32, fallback: i32| {
+        let mut info = [0i32; 6]; // value, minimum, maximum, fuzz, flat, resolution
+        let rc = unsafe { libc::ioctl(fd, (0x8018_4540u32 + axis) as _, info.as_mut_ptr()) };
+        if rc == 0 && info[2] > 0 { info[2] } else { fallback }
+    };
+    let (max_x, max_y) = (abs_max(0, pen::DEFAULT_MAX_X), abs_max(1, pen::DEFAULT_MAX_Y));
+    eprintln!("digitizer: {} max_x={max_x} max_y={max_y}", dev.trim_end_matches('\0'));
+    Some((fd, pen::PenDecoder::new(max_x, max_y)))
+}
+
+fn read_digitizer(fd: libc::c_int, decoder: &mut pen::PenDecoder, out: &mut Vec<pen::PenSample>) {
+    let mut buf = [0u8; pen::EVENT_SIZE * 64];
+    loop {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            return;
+        }
+        decoder.feed(&buf[..n as usize], out);
+        if (n as usize) < buf.len() {
+            return;
+        }
+    }
+}
+
+/// Calibration pairs land in /home/root/wha/pen.log (capped per run) so a
+/// device run can be checked over SSH.
+fn log_calibration(screen: (f64, f64), window: (i32, i32), logged: &mut u32) {
+    if *logged >= 16 {
+        return;
+    }
+    *logged += 1;
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/home/root/wha/pen.log") {
+        let _ = writeln!(f, "screen {:.0},{:.0} -> window {},{}", screen.0, screen.1, window.0, window.1);
+    }
+}
+
+fn pen_event(input_type: i32, x: f64, y: f64) -> qtfb::InputEvent {
+    qtfb::InputEvent { input_type, dev_id: 0, x: x.round() as i32, y: y.round() as i32, d: 0 }
+}
 
 /// Seconds on a Linux clock (BOOTTIME keeps counting through suspend,
 /// MONOTONIC doesn't — resume.rs compares the two).
@@ -324,16 +378,29 @@ fn main() {
     let mut last_chrome_tap = Instant::now() - std::time::Duration::from_secs(1);
     // Suspend/resume: redraw from the stroke store instead of trusting the panel.
     let mut resume = resume::ResumeDetector::default();
+    // Direct digitizer ink (pen.rs): while active, AppLoad's pen events only
+    // calibrate coordinates and confirm focus.
+    let mut digitizer = open_digitizer();
+    let mut calibration = pen::PenCalibration::default();
+    let mut gate = pen::FocusGate::default();
+    let mut samples: Vec<pen::PenSample> = Vec::new();
+    let mut last_digitizer_down: Option<((f64, f64), Instant)> = None;
+    let mut digitizer_stroke_live = false;
+    let mut calibration_logged = 0u32;
+    let started = Instant::now();
 
     loop {
         // Block until the socket is readable (input or disconnect).
-        let mut pfd = libc::pollfd { fd: client.raw_fd(), events: libc::POLLIN, revents: 0 };
+        let mut pfds = [
+            libc::pollfd { fd: client.raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: digitizer.as_ref().map_or(-1, |d| d.0), events: libc::POLLIN, revents: 0 },
+        ];
         // With ink pending, wake exactly at the flush deadline; else 20ms.
         let timeout = match dirty_rect {
             Some(_) => INK_FLUSH_MS.saturating_sub(last_flush.elapsed().as_millis()) as i32,
             None => 20,
         };
-        unsafe { libc::poll(&mut pfd, 1, timeout) };
+        unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
 
         if resume.observe(clock_s(libc::CLOCK_BOOTTIME), clock_s(libc::CLOCK_MONOTONIC)) {
             eprintln!("resume detected — redrawing from {} strokes", strokes.len());
@@ -348,10 +415,73 @@ fn main() {
             render_feedback(&mut fb, &client, &outcome, &mut last_activation);
         }
 
-        let events = match client.drain_events() {
+        let mut events = match client.drain_events() {
             Ok(events) => events,
             Err(_) => break, // window closed by AppLoad — exit
         };
+
+        let mut discard_stroke = false;
+        if let Some((fd, decoder)) = digitizer.as_mut() {
+            samples.clear();
+            read_digitizer(*fd, decoder, &mut samples);
+            // Erasing isn't latency-critical: it keeps AppLoad's pen events.
+            if !erase_mode {
+                let now = started.elapsed().as_secs_f64();
+                let mut commit = false;
+                events.retain(|e| {
+                    let is_pen = matches!(e.input_type, qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE | qtfb::INPUT_PEN_RELEASE);
+                    if is_pen {
+                        if e.input_type == qtfb::INPUT_PEN_PRESS {
+                            if let Some((screen, at)) = last_digitizer_down.take() {
+                                if at.elapsed().as_millis() < 500 {
+                                    calibration.add_pair(screen, (e.x as f64, e.y as f64));
+                                    log_calibration(screen, (e.x, e.y), &mut calibration_logged);
+                                }
+                            }
+                        }
+                        commit |= gate.on_qtfb_pen() == Some(pen::GateAction::Commit);
+                    }
+                    !is_pen
+                });
+                if commit {
+                    events.push(pen_event(qtfb::INPUT_PEN_RELEASE, 0.0, 0.0));
+                }
+                for s in &samples {
+                    let (x, y) = calibration.map(s.x, s.y);
+                    match s.edge {
+                        pen::PenEdge::Down => {
+                            if gate.on_down() == Some(pen::GateAction::Commit) {
+                                events.push(pen_event(qtfb::INPUT_PEN_RELEASE, 0.0, 0.0));
+                            }
+                            last_digitizer_down = Some(((s.x, s.y), Instant::now()));
+                            // A touch outside our window (xochitl chrome) isn't ours.
+                            digitizer_stroke_live = (0.0..W as f64).contains(&x) && (0.0..H as f64).contains(&y);
+                            if digitizer_stroke_live {
+                                events.push(pen_event(qtfb::INPUT_PEN_PRESS, x, y));
+                            }
+                        }
+                        pen::PenEdge::Move if digitizer_stroke_live => events.push(pen_event(qtfb::INPUT_PEN_UPDATE, x, y)),
+                        pen::PenEdge::Up if digitizer_stroke_live => {
+                            digitizer_stroke_live = false;
+                            if gate.on_up(now) == Some(pen::GateAction::Commit) {
+                                events.push(pen_event(qtfb::INPUT_PEN_RELEASE, 0.0, 0.0));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                discard_stroke = gate.tick(now) == Some(pen::GateAction::Discard);
+            }
+        }
+        if discard_stroke {
+            // The digitizer saw a stroke AppLoad never delivered: our window
+            // wasn't focused. Drop it and repaint over its ink.
+            eprintln!("digitizer stroke without focus - discarded");
+            pen_down = false;
+            current.clear();
+            dirty_rect = None;
+            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+        }
 
         for event in events {
             match event.input_type {

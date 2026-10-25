@@ -11,8 +11,9 @@ pub const WHITE: u16 = 0xFFFF;
 pub const BLACK: u16 = 0x0000;
 pub const GRAY: u16 = 0x8410; // mid-gray in RGB565
 
-/// Frames per activation animation (excludes the final settle frame).
-pub const EFFECT_FRAMES: i32 = 6;
+/// Frames per activation animation (excludes the final settle frame). 10 x
+/// 80ms ~ 0.85s with the settle; was 6 (~0.5s) — lengthened on request.
+pub const EFFECT_FRAMES: i32 = 10;
 /// How far past the seal radius the effect reaches.
 pub const EFFECT_REACH: i32 = 120;
 
@@ -136,6 +137,9 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
     let tau = std::f64::consts::TAU;
     let reach = params.reach;
     let w = params.weight;
+    // Motions were tuned on a 6-frame timeline (t = 0..5); more frames add
+    // in-between positions over the same path rather than a longer path.
+    let t = f as f64 * 5.0 / (EFFECT_FRAMES - 1) as f64;
     let pad = radius + reach;
     fb.clear_seal_annulus(cx, cy, radius, pad);
 
@@ -143,7 +147,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         // Fire: tongues rise and flicker above the seal (upstream: particles
         // lift from the ring plane, flicker ∝ 1-stability). Weighted to the top.
         "fire" => {
-            let grow = 40.0 + f as f64 * 12.0;
+            let grow = 40.0 + t * 12.0;
             for i in 0..18 {
                 let a = tau * i as f64 / 18.0;
                 let up = (-a.sin()).max(0.0); // upper hemisphere reaches higher
@@ -162,12 +166,12 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         // (upstream: faucet-arc projectiles under gravity + suspended orb).
         "water" => {
             for k in 0..3 {
-                let rr = radius + 20 + (f * 16 + k * 30) % reach;
+                let rr = radius + 20 + ((t * 16.0) as i32 + k * 30) % reach;
                 fb.circle(cx, cy, rr, 2 + w, BLACK);
             }
             for i in 0..6 {
                 let a = tau * i as f64 / 6.0;
-                let fall = (f as f64 * 14.0 + noise(i) * 20.0) % reach as f64;
+                let fall = (t * 14.0 + noise(i) * 20.0) % reach as f64;
                 let dx = cx + (a.cos() * (radius + 30) as f64) as i32;
                 let dy = cy + (a.sin() * (radius + 30) as f64) as i32 + fall as i32;
                 fb.circle(dx, dy, 4, 2 + w, BLACK);
@@ -177,7 +181,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         // each particle's short stroke). Spiral arms sweep around per frame.
         "wind" => {
             for arm in 0..3 {
-                let base = tau * arm as f64 / 3.0 + f as f64 * 0.4;
+                let base = tau * arm as f64 / 3.0 + t * 0.4;
                 let mut prev = (
                     cx + (base.cos() * (radius + 20) as f64) as i32,
                     cy + (base.sin() * (radius + 20) as f64) as i32,
@@ -210,7 +214,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
             }
             for i in 0..8 {
                 let a = tau * i as f64 / 8.0;
-                let rise = (f as f64 * 12.0 + noise(i) * 30.0) % (reach as f64 * 0.9);
+                let rise = (t * 12.0 + noise(i) * 30.0) % (reach as f64 * 0.9);
                 let r = (radius + 30) as f64 + rise;
                 let (bx, by) = (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
                 let sz = 10 - (rise / reach as f64 * 6.0) as i32; // shrink as they climb
@@ -220,7 +224,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         // Light (and anything else): radiant beams pulse outward, thin and long
         // (upstream: bright projectile trails). Beams extend then contract.
         _ => {
-            let pulse = ((f as f64 / 5.0 * std::f64::consts::PI).sin() * reach as f64 * 0.9) as i32;
+            let pulse = ((t / 5.0 * std::f64::consts::PI).sin() * reach as f64 * 0.9) as i32;
             for i in 0..24 {
                 let a = tau * i as f64 / 24.0;
                 let r0 = (radius + 22) as f64;

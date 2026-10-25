@@ -26,7 +26,6 @@ pub const UPDATE_PARTIAL: i32 = 1;
 // server default is REFRESH_MODE_UI). Sticky per window, no server reply;
 // values outside 0..=4 make the server drop the connection.
 pub const REFRESH_MODE_UFAST: i32 = 0;
-pub const REFRESH_MODE_UI: i32 = 4;
 
 /// FBFMT_RM2FB: native reMarkable 2, 1404x1872, RGB565 (2 bytes/pixel).
 pub const FBFMT_RM2FB: u8 = 0;

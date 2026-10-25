@@ -4,7 +4,7 @@
 //! Row 1: the five elements, no signs. Row 2: fire with each modifying sign
 //! overlay (column, levitation, convergence) at typical upstream values.
 
-use device::render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_REACH, H, W};
+use device::render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, EFFECT_REACH, H, W};
 use device::spell_view::{EffectParams, Overlay};
 
 fn main() {
@@ -21,8 +21,8 @@ fn main() {
         let mut px = vec![0xffffu16; (W * H) as usize];
         let mut fb = Fb { px: &mut px };
         let (cx, cy, radius) = (W / 2, H / 2, 150);
-        // Peak frame (4 of 6) shows the effect near full extent.
-        effect_frame(&mut fb, cx, cy, radius, el, 4, &EffectParams::aura());
+        // Peak frame (~2/3 through) shows the effect near full extent.
+        effect_frame(&mut fb, cx, cy, radius, el, EFFECT_FRAMES * 2 / 3, &EffectParams::aura());
         // Draw the sigil-ish marker + a name from settle onto the same buffer edge.
         let _ = el;
 
@@ -50,7 +50,7 @@ fn main() {
         let mut fb = Fb { px: &mut px };
         let (cx, cy, radius) = (W / 2, H / 2, 150);
         let params = EffectParams { reach: EFFECT_REACH + 30, weight: 1, strength: 0.65, spread: 0.4, overlay };
-        effect_frame(&mut fb, cx, cy, radius, "fire", 4, &params);
+        effect_frame(&mut fb, cx, cy, radius, "fire", EFFECT_FRAMES * 2 / 3, &params);
         let half = tile / 2;
         for ty in 0..tile {
             for tx in 0..tile {
