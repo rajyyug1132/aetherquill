@@ -157,7 +157,8 @@ pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
         let y = row_y(i);
         fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 2, GRAY);
         fb.text(PANEL_X + 28, y + 26, &fit(&spell.name, name_chars), 3, BLACK);
-        fb.text(PANEL_X + 28, y + 74, &fit(&spell.line, line_chars), 2, GRAY);
+        // Black, not gray, for legibility of the 2px-stroke text (unverified on hardware).
+        fb.text(PANEL_X + 28, y + 74, &fit(&spell.line, line_chars), 2, BLACK);
     }
     if page_count(total) > 1 {
         draw_nav_button(fb, total, Nav::Prev, page > 0);

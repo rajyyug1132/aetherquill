@@ -5,3 +5,4 @@ dist/
 .DS_Store
 effect_preview.ppm
 catalogue_preview.ppm
+ui_preview_*.ppm
