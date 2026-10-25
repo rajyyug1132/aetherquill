@@ -508,7 +508,7 @@ mod tests {
     fn spells_fit_the_drawing_area() {
         for spell in load() {
             for (x, y) in spell.screen_strokes().into_iter().flatten() {
-                assert!((114.0..1404.0).contains(&x) && (64.0..1872.0).contains(&y), "{} point {x},{y}", spell.id);
+                assert!((crate::chrome::CANVAS_LEFT as f64..1404.0).contains(&x) && (64.0..1872.0).contains(&y), "{} point {x},{y}", spell.id);
             }
         }
     }
@@ -523,6 +523,7 @@ mod tests {
         assert_eq!(spell_at(PANEL_X + 10, row_y(ROWS_PER_PAGE - 1) + ROW_H - 1, n, 0), Some(ROWS_PER_PAGE - 1));
         assert_eq!(spell_at(PANEL_X + 10, row_y(0) + 5, n, last_page), Some(last_page * ROWS_PER_PAGE));
         assert_eq!(spell_at(PANEL_X + 10, row_y(on_last - 1) + 5, n, last_page), Some(n - 1));
+        assert_eq!(spell_at(PANEL_X + 10, row_y(on_last) + 5, n, last_page), None, "past the last spell");
         assert_eq!(spell_at(PANEL_X - 1, row_y(1), n, 0), None);
         assert_eq!(spell_at(PANEL_X + 10, PANEL_Y + 10, n, 0), None, "title is not a row");
         for s in &spells {

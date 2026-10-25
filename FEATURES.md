@@ -2,13 +2,13 @@
 
 Nine ideas, each grounded in the repo at 0.3.6. None is built or checked on hardware.
 
-## 1. Count every cast, including after CLEAR
+## 1. Recast after undo and redraw
 
-- **What:** `last_activation` in `device/src/main.rs` is reset only when a catalogue spell is picked. CLEAR does not reset it, so drawing the same spell again after CLEAR gives no animation and no log line. The README says each cast is appended to the log. Decide what counts as a new cast: CLEAR, undo to an empty page, both, or neither. If CLEAR counts, the fix is one reset on that path.
-- **User value:** People who clear and redraw a spell get the feedback and the log entry they expect, and the grimoire matches what they drew.
-- **Effort:** S. One reset, plus the decision about undo.
+- **What:** emptying the page (CLEAR, undo to empty, erase to empty) now forgets the last cast, so redrawing the spell casts again (`session.rs`, test `emptying_the_page_forgets_the_last_activation`). One case is left: undo just the sigil and draw it again, and the signature matches the last cast, so nothing plays and nothing is logged. Decide whether that counts as a new cast. If so, forget the last cast whenever a stroke is removed and the spell stops being active.
+- **User value:** People correcting a sigil get the animation and log line for the spell they finished, not silence.
+- **Effort:** S. One reset on the session's undo/erase path, plus a host test.
 - **Safety property:** none. No new files or paths. It only changes when the existing log line and animation fire.
-- **Depends on unverified hardware behavior:** yes, mildly. The replayed animation on the panel has not been seen for this case; INSTALL-CHECKLIST 5.6 covers only the catalogue case. The check runs in the event loop, so host tests cannot reach it.
+- **Depends on unverified hardware behavior:** yes, mildly. The replayed animation on the panel has not been seen for this case.
 
 ## 2. Richer grimoire lines
 
