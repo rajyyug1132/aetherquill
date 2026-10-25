@@ -73,9 +73,10 @@ impl Session {
         true
     }
 
-    /// CLEAR is undoable through redo taps.
+    /// CLEAR is undoable through redo taps. Reversed, so redo pops the first
+    /// stroke first and the page comes back in drawing order.
     pub fn clear(&mut self) {
-        self.redo.extend(self.strokes.drain(..));
+        self.redo.extend(self.strokes.drain(..).rev());
     }
 
     /// Eraser: delete the first stroke with a point within ERASE_RADIUS of (x, y).
