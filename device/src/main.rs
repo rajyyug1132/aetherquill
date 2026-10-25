@@ -10,7 +10,10 @@
 //! Tap UNDO / CLEAR boxes in the top chrome strip. Close the window from
 //! AppLoad to exit (server disconnect ends the event loop).
 
-use std::sync::mpsc;
+use std::collections::VecDeque;
+use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use recognizer::config::{COMPILER, EFFECT_SIZE, INPUT, LAYERS, RECOGNITION, RING};
@@ -25,7 +28,7 @@ use recognizer::stroke_cleaner::RawStroke;
 mod grimoire;
 mod qtfb;
 
-use device::{catalogue, pen, render, resume, shapes, spell_view};
+use device::{catalogue, lag, pen, render, resume, shapes, spell_view};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
@@ -49,7 +52,12 @@ fn open_digitizer() -> Option<(libc::c_int, pen::PenDecoder)> {
         if rc == 0 && info[2] > 0 { info[2] } else { fallback }
     };
     let (max_x, max_y) = (abs_max(0, pen::DEFAULT_MAX_X), abs_max(1, pen::DEFAULT_MAX_Y));
-    eprintln!("digitizer: {} max_x={max_x} max_y={max_y}", dev.trim_end_matches('\0'));
+    // EVIOCSCLOCKID = _IOW('E', 0xa0, int): this fd's event timestamps on
+    // CLOCK_MONOTONIC (per client; xochitl's own fd is untouched), so the lag
+    // log can compare them with clock_gettime.
+    let clock: libc::c_int = libc::CLOCK_MONOTONIC;
+    let rc = unsafe { libc::ioctl(fd, 0x4004_45a0u32 as _, &clock) };
+    eprintln!("digitizer: {} max_x={max_x} max_y={max_y} monotonic_ts={}", dev.trim_end_matches('\0'), rc == 0);
     Some((fd, pen::PenDecoder::new(max_x, max_y)))
 }
 
@@ -64,6 +72,13 @@ fn read_digitizer(fd: libc::c_int, decoder: &mut pen::PenDecoder, out: &mut Vec<
         if (n as usize) < buf.len() {
             return;
         }
+    }
+}
+
+/// Appends to lag::LOG_PATH only if it already exists (touch to enable).
+fn lag_log(line: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(lag::LOG_PATH) {
+        let _ = writeln!(f, "{line}");
     }
 }
 
@@ -247,8 +262,10 @@ struct SpellOutcome {
 fn recognize(dictionary: &Dictionary, raw: &[RawStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
     let t0 = Instant::now();
     let result = classify_drawing(raw, previous_ring, dictionary, env!("CARGO_PKG_VERSION"), &INPUT, &RING, &LAYERS, &RECOGNITION);
-    eprintln!("recognize: {} strokes in {}ms", raw.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("recognize: {} strokes in {ms:.0}ms", raw.len());
+    lag_log(&format!("{{\"recognize_ms\":{ms:.1},\"strokes\":{}}}", raw.len()));
     SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }
 }
 
@@ -270,12 +287,16 @@ struct Recognizer {
     jobs: mpsc::Sender<RecognitionJob>,
     results: mpsc::Receiver<(u64, SpellOutcome)>,
     generation: u64,
+    /// True while the worker classifies (the lag log tags samples flushed then).
+    busy: Arc<AtomicBool>,
 }
 
 impl Recognizer {
     fn spawn() -> Self {
         let (jobs, job_rx) = mpsc::channel::<RecognitionJob>();
         let (result_tx, results) = mpsc::channel();
+        let busy = Arc::new(AtomicBool::new(false));
+        let worker_busy = busy.clone();
         std::thread::spawn(move || {
             let dictionary = load_dictionary();
             while let Ok(mut job) = job_rx.recv() {
@@ -283,12 +304,15 @@ impl Recognizer {
                     job = newer;
                 }
                 let (generation, raw, previous_ring) = job;
-                if result_tx.send((generation, recognize(&dictionary, &raw, previous_ring.as_ref()))).is_err() {
+                worker_busy.store(true, Ordering::Relaxed);
+                let outcome = recognize(&dictionary, &raw, previous_ring.as_ref());
+                worker_busy.store(false, Ordering::Relaxed);
+                if result_tx.send((generation, outcome)).is_err() {
                     return;
                 }
             }
         });
-        Recognizer { jobs, results, generation: 0 }
+        Recognizer { jobs, results, generation: 0, busy }
     }
 
     fn request(&mut self, strokes: &[ScreenStroke], previous_ring: Option<Ring>) {
@@ -437,6 +461,14 @@ fn main() {
     let mut last_digitizer_down: Option<((f64, f64), Instant)> = None;
     let mut digitizer_stroke_live = false;
     let started = Instant::now();
+    // Lag log (lag.rs): kernel time of each digitizer PRESS/UPDATE queued into
+    // `events` (same order), of each inked sample awaiting a flush, and the
+    // current stroke's latencies.
+    let mut pen_ts: VecDeque<f64> = VecDeque::new();
+    let mut ink_pending: Vec<f64> = Vec::new();
+    let mut stroke_lat: Vec<f64> = Vec::new();
+    let mut stroke_busy = 0usize;
+    let mut lag_stroke = 0u64;
 
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
@@ -548,9 +580,13 @@ fn main() {
                             digitizer_stroke_live = (0.0..W as f64).contains(&x) && (0.0..H as f64).contains(&y);
                             if digitizer_stroke_live {
                                 events.push(pen_event(qtfb::INPUT_PEN_PRESS, x, y));
+                                pen_ts.push_back(s.t);
                             }
                         }
-                        pen::PenEdge::Move if digitizer_stroke_live => events.push(pen_event(qtfb::INPUT_PEN_UPDATE, x, y)),
+                        pen::PenEdge::Move if digitizer_stroke_live => {
+                            events.push(pen_event(qtfb::INPUT_PEN_UPDATE, x, y));
+                            pen_ts.push_back(s.t);
+                        }
                         pen::PenEdge::Up if digitizer_stroke_live => {
                             digitizer_stroke_live = false;
                             if gate.on_up(now) == Some(pen::GateAction::Commit) {
@@ -576,6 +612,7 @@ fn main() {
         for event in events {
             match event.input_type {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
+                    let ts = pen_ts.pop_front();
                     let (x, y) = (event.x as f64, event.y as f64);
                     last_pen_event = Instant::now();
                     if catalogue_open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
@@ -609,6 +646,7 @@ fn main() {
                         continue;
                     }
                     fb.line(last.0 as i32, last.1 as i32, x as i32, y as i32, INK_W, BLACK);
+                    ink_pending.extend(ts);
                     let (x0, y0) = (last.0.min(x) as i32 - INK_W, last.1.min(y) as i32 - INK_W);
                     let (x1, y1) = (last.0.max(x) as i32 + INK_W, last.1.max(y) as i32 + INK_W);
                     dirty_rect = Some(match dirty_rect {
@@ -619,6 +657,7 @@ fn main() {
                 }
                 qtfb::INPUT_PEN_RELEASE => {
                     eprintln!("pen release, {} pts", current.len());
+                    pen_ts.clear();
                     if erase_mode {
                         if erased_any {
                             erased_any = false;
@@ -781,7 +820,19 @@ fn main() {
                 let _ = client.update_partial(x0.max(0), y0.max(0), x1 - x0, y1 - y0);
                 dirty_rect = None;
                 last_flush = Instant::now();
+                let sent = clock_s(libc::CLOCK_MONOTONIC);
+                if recognizer.busy.load(Ordering::Relaxed) {
+                    stroke_busy += ink_pending.len();
+                }
+                stroke_lat.extend(ink_pending.drain(..).map(|t| (sent - t) * 1000.0));
             }
+        }
+        // The stroke's last flush is done: log it.
+        if !pen_down && dirty_rect.is_none() && !stroke_lat.is_empty() {
+            lag_stroke += 1;
+            lag_log(&lag::stroke_line(lag_stroke, &mut stroke_lat, stroke_busy));
+            stroke_lat.clear();
+            stroke_busy = 0;
         }
 
         // Recognition results land between strokes, never mid-stroke (a ring
