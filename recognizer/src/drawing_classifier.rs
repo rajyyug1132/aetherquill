@@ -1,22 +1,30 @@
 //! Direct port of service/vendor/wha/src/parser/drawingClassifier.js — the
 //! pipeline entry point tying every other module together.
 //!
-//! ponytail: the JS's `roundedDeep`/`stripCandidate`/`stripRecognitionDiagnostics`
-//! exist to trim payloads for the browser's JSON wire format. There's no
-//! serialization boundary in this crate yet (that's the device crate's job,
-//! later), so GlyphAst below keeps full Candidate/Recognition values —
-//! trimming for whatever wire format the device actually needs is deferred
-//! to that task instead of guessing a shape now.
+//! ponytail: the JS's `stripCandidate` exists to trim payloads for the
+//! browser's JSON wire format. There's no serialization boundary in this
+//! crate, so GlyphAst below keeps full Candidate values.
+//!
+//! `roundedDeep` is load-bearing: compileSpell reads the 3-decimal glyphAST,
+//! so `rounded_deep` below reproduces it on every glyphAST field the compiler
+//! reads (ring, recognitions, globalMetrics). Candidates/unknowns are left
+//! unrounded — nothing downstream of classify_drawing reads their numbers.
+//!
+//! `stripRecognitionDiagnostics` is NOT just payload trimming: the compiler
+//! reads `diagnostics.topMatches` (spellBuilder's ambiguity gap, spellQuality's
+//! ambiguity penalty), and in JS those reads always see the stripped glyphAST,
+//! i.e. no diagnostics -> 0. Reproduced below (caught by tests/signs_parity.rs:
+//! keeping diagnostics cost ~3% stability vs upstream).
 
 use crate::config::{InputConfig, LayersConfig, RingConfig};
 use crate::coordinate_normalizer::{classify_strokes_against_ring, Ring, StrokeClassification};
-use crate::geometry::{clamp, mean, vector_from_angle_deg};
+use crate::geometry::{clamp, format_number, mean, vector_from_angle_deg, Point};
 use crate::glyph_warnings::GlyphWarning;
 use crate::layer_mapper::Layer;
 use crate::ring_detector::detect_ring;
 use crate::stroke_cleaner::{clean_strokes, CleanedStroke, RawStroke};
 use crate::stroke_grouper::{build_symbol_candidates, Candidate};
-use crate::symbol_recognizer::{recognize_candidates, BestGuess, Dictionary, Recognition, RecognitionConfig};
+use crate::symbol_recognizer::{recognize_candidates, BestGuess, Dictionary, Recognition, RecognitionConfig, RecognitionDiagnostics};
 
 // Assuming a sigil has to be in the center of the ring, so reward the score a little bit.
 fn primary_sigil_score(sigil: &Recognition) -> f64 {
@@ -34,6 +42,51 @@ fn recognized_sigils(recognitions: &[Recognition]) -> Vec<&Recognition> {
     let mut sigils: Vec<&Recognition> = recognitions.iter().filter(|r| r.recognized && r.kind == "sigil").collect();
     sigils.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
     sigils
+}
+
+fn rounded_point(p: Point) -> Point {
+    Point { x: format_number(p.x), y: format_number(p.y) }
+}
+
+fn rounded_ring(ring: &Ring) -> Ring {
+    let mut r = ring.clone();
+    r.center = rounded_point(r.center);
+    for v in [&mut r.radius, &mut r.completeness, &mut r.coverage_ratio, &mut r.gap_arc_length, &mut r.roundness, &mut r.line_smoothness, &mut r.neatness, &mut r.overdraw_amount] {
+        *v = format_number(*v);
+    }
+    for v in [&mut r.gap.start_angle, &mut r.gap.end_angle, &mut r.gap.size_degrees] {
+        *v = format_number(*v);
+    }
+    for u in r.unsupported_nested_rings.iter_mut().chain(r.unsupported_multiple_rings.iter_mut()) {
+        u.center = rounded_point(u.center);
+        u.radius = format_number(u.radius);
+        u.completeness = format_number(u.completeness);
+    }
+    r
+}
+
+fn rounded_recognition(recognition: Recognition) -> Recognition {
+    let mut r = recognition;
+    for v in [&mut r.radius_norm, &mut r.angle_deg, &mut r.size_norm, &mut r.length_norm, &mut r.orientation_deg, &mut r.directed_orientation_deg, &mut r.neatness, &mut r.confidence] {
+        *v = format_number(*v);
+    }
+    let s = &mut r.shape;
+    for v in [&mut s.aspect_ratio, &mut s.elongation, &mut s.elongation_norm, &mut s.stroke_length_imbalance, &mut s.axis_dominance] {
+        *v = format_number(*v);
+    }
+    if let Some(sem) = r.semantic.as_mut() {
+        for v in [&mut sem.force, &mut sem.focus, &mut sem.spread, &mut sem.range, &mut sem.lifetime_bias].into_iter().flatten() {
+            *v = format_number(*v);
+        }
+    }
+    r
+}
+
+fn strip_recognition_diagnostics(recognition: &Recognition) -> Recognition {
+    Recognition {
+        diagnostics: RecognitionDiagnostics { best_guess: None, recognition_rotation_deg: 0.0, top_matches: vec![] },
+        ..recognition.clone()
+    }
 }
 
 fn select_primary_sigil<'a>(sigils: &[&'a Recognition]) -> Option<&'a Recognition> {
@@ -227,21 +280,26 @@ pub fn classify_drawing(
     let primary_sigil = select_primary_sigil(&sigils);
     let primary_candidate_id = primary_sigil.map(|s| s.candidate_id.clone());
     let unsupported_multiple_sigils: Vec<Recognition> =
-        sigils.iter().filter(|s| Some(&s.candidate_id) != primary_candidate_id.as_ref()).map(|s| (*s).clone()).collect();
-    let signs: Vec<Recognition> = recognitions.iter().filter(|r| r.recognized && r.kind == "sign").cloned().collect();
+        sigils.iter().filter(|s| Some(&s.candidate_id) != primary_candidate_id.as_ref()).map(|s| strip_recognition_diagnostics(s)).collect();
+    let signs: Vec<Recognition> =
+        recognitions.iter().filter(|r| r.recognized && r.kind == "sign").map(strip_recognition_diagnostics).collect();
     let unknowns = summarize_unknowns(&candidates, &recognitions);
     let global_metrics = calculate_global_metrics(&ring, &recognitions, &unknowns);
     let warnings = warning_list(&ring, primary_sigil, &unsupported_multiple_sigils, &unknowns, &recognitions);
 
     let glyph_ast = GlyphAst {
         version: app_version.to_string(),
-        ring: ring.clone(),
+        ring: rounded_ring(&ring),
         candidates: candidates.clone(),
-        primary_sigil: primary_sigil.cloned(),
-        unsupported_multiple_sigils,
-        signs,
+        primary_sigil: primary_sigil.map(strip_recognition_diagnostics).map(rounded_recognition),
+        unsupported_multiple_sigils: unsupported_multiple_sigils.into_iter().map(rounded_recognition).collect(),
+        signs: signs.into_iter().map(rounded_recognition).collect(),
         unknowns,
-        global_metrics,
+        global_metrics: GlobalMetrics {
+            neatness: format_number(global_metrics.neatness),
+            radial_symmetry: format_number(global_metrics.radial_symmetry),
+            instability: format_number(global_metrics.instability),
+        },
         warnings,
     };
 

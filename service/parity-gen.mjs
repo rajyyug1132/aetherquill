@@ -69,7 +69,21 @@ const scenarios = [
   })),
 ];
 
-const fixtures = scenarios.map(({ name, strokes }) => {
+// Placed signs: the ring-fire-<sign> scenarios above straddle the
+// middle/outer boundary and come back unrecognized (upstream truth). These sit
+// fully in the outer layer, directly below the seal (angle 90° — the only
+// placement where the upright templates recognize, probed 2026-10-25), so the
+// sign -> spellIR math (manifestation, gravity, force, convergence) is covered.
+const signScenarios = SIGNS.map((sign) => ({
+  name: `ring-fire-${sign}-placed`,
+  strokes: [
+    ringStroke(350, 450, 260),
+    ...templateStrokes("sigils", "fire", 350, 450, 130),
+    ...templateStrokes("signs", sign, 350, 450 + 210, 44),
+  ],
+}));
+
+const run = ({ name, strokes }) => {
   tick = 0; // stable t values per scenario
   const pipeline = classifyDrawing({ strokes, previousRing: null, dictionary, config: CONFIG });
   const spellIR = compileSpell({ glyphAST: pipeline.glyphAST, dictionary, config: CONFIG });
@@ -86,12 +100,17 @@ const fixtures = scenarios.map(({ name, strokes }) => {
     glyphAST,
     spellIR,
   };
-});
+};
+const fixtures = scenarios.map(run);
+const signFixtures = signScenarios.map(run);
 
 mkdirSync(new URL("../recognizer/fixtures/", import.meta.url), { recursive: true });
 const out = new URL("../recognizer/fixtures/pipeline.json", import.meta.url);
 writeFileSync(out, JSON.stringify(fixtures, null, 1));
 console.log(`wrote ${fixtures.length} scenarios to recognizer/fixtures/pipeline.json`);
-for (const f of fixtures) {
+const signsOut = new URL("../recognizer/fixtures/signs.json", import.meta.url);
+writeFileSync(signsOut, JSON.stringify(signFixtures, null, 1));
+console.log(`wrote ${signFixtures.length} scenarios to recognizer/fixtures/signs.json`);
+for (const f of [...fixtures, ...signFixtures]) {
   console.log(`  ${f.name}: ring=${f.glyphAST.ring.found} element=${f.spellIR.element} valid=${f.spellIR.valid}`);
 }

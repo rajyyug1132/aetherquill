@@ -8,7 +8,7 @@
 
 use crate::config::{CompilerConfig, EffectSizeConfig};
 use crate::drawing_classifier::GlyphAst;
-use crate::geometry::clamp;
+use crate::geometry::{clamp, js_round};
 use crate::glyph_warnings::GlyphWarning;
 use crate::semantic_rules::{aggregate_manifestations, aggregate_semantic_deltas, combine_sign_direction, sign_influence, Manifestation, SemanticDeltas, SurfaceDirection};
 use crate::spell_direction::{direction_from_surface_vector, SpellDirection};
@@ -120,9 +120,9 @@ fn manifestation_signature(manifestations: &HashMap<String, Manifestation>) -> S
     let mut parts: Vec<String> = manifestations
         .iter()
         .map(|(id, m)| {
-            let point_part = m.convergence.map(|c| format!(".p{}.{}", (c.point.x * 100.0).round(), (c.point.y * 100.0).round())).unwrap_or_default();
-            let radius_part = m.convergence.map(|c| format!(".r{}", (c.radius * 100.0).round())).unwrap_or_default();
-            format!("{id}.{}{point_part}{radius_part}", (m.strength * 100.0).round())
+            let point_part = m.convergence.map(|c| format!(".p{}.{}", js_round(c.point.x * 100.0), js_round(c.point.y * 100.0))).unwrap_or_default();
+            let radius_part = m.convergence.map(|c| format!(".r{}", js_round(c.radius * 100.0))).unwrap_or_default();
+            format!("{id}.{}{point_part}{radius_part}", js_round(m.strength * 100.0))
         })
         .collect();
     parts.sort();
@@ -226,16 +226,16 @@ pub fn compile_spell(glyph_ast: &GlyphAst, compiler_config: &CompilerConfig, eff
         "{}:{}:{active}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         primary.id.as_deref().unwrap_or(""),
         manifestation_signature(&manifestation_aggregate.manifestations),
-        (effect_scale * 100.0).round(),
-        (force * 100.0).round(),
-        (spread * 100.0).round(),
-        (duration * 100.0).round(),
-        direction.x_tilt_deg.round(),
-        direction.y_tilt_deg.round(),
-        (direction_coherence * 100.0).round(),
-        (gravity * 100.0).round(),
-        (quality * 100.0).round(),
-        (stability * 100.0).round(),
+        js_round(effect_scale * 100.0),
+        js_round(force * 100.0),
+        js_round(spread * 100.0),
+        js_round(duration * 100.0),
+        js_round(direction.x_tilt_deg),
+        js_round(direction.y_tilt_deg),
+        js_round(direction_coherence * 100.0),
+        js_round(gravity * 100.0),
+        js_round(quality * 100.0),
+        js_round(stability * 100.0),
     );
 
     SpellIr {

@@ -4,11 +4,13 @@ version = 4
 
 [[package]]
 name = "device"
-version = "0.2.0"
+version = "0.3.6"
 dependencies = [
  "font8x8",
  "libc",
  "recognizer",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

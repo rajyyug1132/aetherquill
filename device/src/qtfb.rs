@@ -17,9 +17,18 @@ pub const MESSAGE_INITIALIZE: u8 = 0;
 pub const MESSAGE_UPDATE: u8 = 1;
 pub const MESSAGE_TERMINATE: u8 = 3;
 pub const MESSAGE_USERINPUT: u8 = 4;
+pub const MESSAGE_SET_REFRESH_MODE: u8 = 5;
+/// Flashing full-quality refresh: the only way to clear the fast waveform's
+/// ghosts. rm-appload's server thread sleeps 1s after it, like a mode change.
+pub const MESSAGE_REQUEST_FULL_REFRESH: u8 = 6;
 
 pub const UPDATE_ALL: i32 = 0;
 pub const UPDATE_PARTIAL: i32 = 1;
+
+// Waveform for this window's later repaints (rm-appload v0.5.3 common.h;
+// server default is REFRESH_MODE_UI). Sticky per window, no server reply;
+// values outside 0..=4 make the server drop the connection.
+pub const REFRESH_MODE_UFAST: i32 = 0;
 
 /// FBFMT_RM2FB: native reMarkable 2, 1404x1872, RGB565 (2 bytes/pixel).
 pub const FBFMT_RM2FB: u8 = 0;
@@ -29,6 +38,7 @@ pub const RM2_BPP: usize = 2;
 
 // Input event types (server -> client).
 pub const INPUT_TOUCH_PRESS: i32 = 0x10;
+pub const INPUT_TOUCH_RELEASE: i32 = 0x11;
 pub const INPUT_PEN_PRESS: i32 = 0x20;
 pub const INPUT_PEN_RELEASE: i32 = 0x21;
 pub const INPUT_PEN_UPDATE: i32 = 0x22;
@@ -154,6 +164,20 @@ impl QtfbClient {
         msg[12..16].copy_from_slice(&y.to_le_bytes());
         msg[16..20].copy_from_slice(&w.to_le_bytes());
         msg[20..24].copy_from_slice(&h.to_le_bytes());
+        self.send_msg(&msg)
+    }
+
+    /// MESSAGE_SET_REFRESH_MODE: refreshMode i32 @4 (armv7 union align 4).
+    pub fn set_refresh_mode(&self, mode: i32) -> io::Result<()> {
+        let mut msg = [0u8; 24];
+        msg[0] = MESSAGE_SET_REFRESH_MODE;
+        msg[4..8].copy_from_slice(&mode.to_le_bytes());
+        self.send_msg(&msg)
+    }
+
+    pub fn request_full_refresh(&self) -> io::Result<()> {
+        let mut msg = [0u8; 24];
+        msg[0] = MESSAGE_REQUEST_FULL_REFRESH;
         self.send_msg(&msg)
     }
 

@@ -36,6 +36,25 @@ pub fn rounded_degrees(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
+/// JS `Math.round` as it lands in a template string: ties go toward +inf
+/// (Rust's `round` goes away from zero), and -0 prints as "0" (`+ 0.0` turns
+/// -0.0 into 0.0 so `{}` formatting matches).
+pub fn js_round(value: f64) -> f64 {
+    let r = value.round();
+    (if value - r == 0.5 { r + 1.0 } else { r }) + 0.0
+}
+
+/// JS `formatNumber(value, 3)` = `Number(value.toFixed(3))`. `{:.3}` rounds the
+/// exact binary value like toFixed does; the two differ only on exact binary
+/// ties (toFixed picks the larger magnitude, Rust picks even) — vanishingly rare
+/// for pipeline outputs.
+pub fn format_number(value: f64) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    format!("{value:.3}").parse().unwrap()
+}
+
 pub fn normalize_angle_deg(value: f64) -> f64 {
     ((value % FULL_CIRCLE_DEG) + FULL_CIRCLE_DEG) % FULL_CIRCLE_DEG
 }
@@ -188,6 +207,16 @@ pub fn endpoint_closedness(strokes: &[Vec<Point>], size: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn js_round_and_format_number_match_js() {
+        // node -e: [Math.round(-2.5), Math.round(2.5), `${Math.round(-0.078)}`, Number((0.12345).toFixed(3))]
+        assert_eq!(js_round(-2.5), -2.0);
+        assert_eq!(js_round(2.5), 3.0);
+        assert_eq!(format!("{}", js_round(-0.078)), "0");
+        assert_eq!(format_number(0.12345), 0.123);
+        assert_eq!(format_number(-1.23456), -1.235);
+    }
 
     // Parity fixtures — same inputs/expected outputs as a `node -e` run against
     // the vendored geometry.js, so any drift from the JS ground truth fails here.

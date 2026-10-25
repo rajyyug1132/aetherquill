@@ -9,14 +9,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Two crates, no root workspace: test each in its own directory.
+# Same checks as release.yml; nothing here builds for or talks to a tablet.
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Recognizer (parity + end-to-end)
+      run: cd recognizer && cargo test --verbose
+    - name: Device host tests
+      run: cd device && cargo test --lib --verbose
