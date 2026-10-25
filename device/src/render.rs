@@ -367,3 +367,48 @@ pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, 
         fb.text(cx - label.len() as i32 * 3 * 8 / 2, cy + radius + 96, label, 3, BLACK);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SENTINEL: u16 = 0x1234;
+
+    /// Sidebar (SIDEBAR_W 110 + 2px edge) and status strip (STATUS_H 64) from
+    /// main.rs; literal on purpose so the contract is stated independently.
+    fn protected(x: i32, y: i32) -> bool {
+        x < 112 || y < 64
+    }
+
+    fn params(overlay: Overlay) -> EffectParams {
+        EffectParams { reach: 123, weight: 1, strength: 0.65, spread: 0.4, manifestation: "column".into(), overlay }
+    }
+
+    #[test]
+    fn big_ring_effects_leave_sidebar_and_status_strip_alone() {
+        let overlays = [Overlay::Aura, Overlay::Column { dir: (0.0, -1.0) }, Overlay::Levitation { lift: 0.26 }, Overlay::Convergence { point: (0.0, 0.34), rigidity: 0.61 }];
+        // (700,500) pushes the annulus over the status strip, (700,900) over the sidebar.
+        for (cx, cy) in [(700, 900), (700, 500), (300, 300)] {
+            for el in ["fire", "water", "wind", "earth", "light"] {
+                for overlay in overlays.clone() {
+                    let mut px = vec![WHITE; (W * H) as usize];
+                    for y in 0..H {
+                        for x in 0..W {
+                            if protected(x, y) {
+                                px[(y * W + x) as usize] = SENTINEL;
+                            }
+                        }
+                    }
+                    let mut fb = Fb { px: &mut px };
+                    let p = params(overlay);
+                    for f in 0..EFFECT_FRAMES {
+                        effect_frame(&mut fb, cx, cy, 519, el, f, &p);
+                    }
+                    effect_settle(&mut fb, cx, cy, 519, el, &p);
+                    let hit = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| protected(x, y) && px[(y * W + x) as usize] != SENTINEL).count();
+                    assert_eq!(hit, 0, "{el} at ({cx},{cy}): {hit} sidebar/status pixels overwritten");
+                }
+            }
+        }
+    }
+}
