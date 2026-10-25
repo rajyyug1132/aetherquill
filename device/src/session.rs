@@ -114,16 +114,28 @@ impl Session {
         true
     }
 
-    /// Index of the first stroke a finger at (x, y) grabs.
-    pub fn grab_at(&self, x: f64, y: f64) -> Option<usize> {
-        self.strokes.iter().position(|s| s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < GRAB_RADIUS))
+    /// Id of the first stroke a finger at (x, y) grabs. An id, not an index:
+    /// a second finger's undo/erase shifts the list mid-drag.
+    pub fn grab_at(&self, x: f64, y: f64) -> Option<String> {
+        let hit = self.strokes.iter().find(|s| s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < GRAB_RADIUS));
+        hit.map(|s| s.id.clone())
     }
 
-    pub fn move_stroke(&mut self, idx: usize, dx: f64, dy: f64) {
-        for p in &mut self.strokes[idx].points {
+    /// Moves a stroke by id; false when it is gone (undone/erased since the grab).
+    /// A snapped ring member leaves the ring, so the drag shows the raw stroke
+    /// moving instead of hiding behind the stale circle until the drop.
+    pub fn move_stroke(&mut self, id: &str, dx: f64, dy: f64) -> bool {
+        let in_snapped_ring = self.snapped_ids().iter().any(|r| r == id);
+        let Some(stroke) = self.strokes.iter_mut().find(|s| s.id == id) else { return false };
+        for p in &mut stroke.points {
             p.0 += dx;
             p.1 += dy;
         }
+        if in_snapped_ring {
+            self.previous_ring = None;
+            self.snapped_ring_ids.clear();
+        }
+        true
     }
 
     /// Spell Catalogue pick: the page is replaced (the first commit clears
@@ -259,10 +271,14 @@ mod tests {
         }
         let grab = s.grab_at(210.0, 500.0).unwrap();
         assert!(s.erase_at(210.0, 200.0));
-        s.move_stroke(grab, 7.0, 0.0);
+        assert!(s.move_stroke(&grab, 7.0, 0.0));
         let x_of = |s: &Session, id: &str| s.strokes.iter().find(|t| t.id == id).unwrap().points[0].0;
         assert_eq!(x_of(&s, "s2"), 207.0, "the grabbed stroke did not move");
         assert_eq!(x_of(&s, "s3"), 200.0, "a different stroke moved instead");
+
+        // Grabbed stroke undone away mid-drag: the move is a no-op, no panic.
+        assert!(s.undo() && s.undo());
+        assert!(!s.move_stroke(&grab, 1.0, 0.0));
     }
 
     // README: "Close a ring | It snaps to a perfect circle" - and a dragged
@@ -277,11 +293,11 @@ mod tests {
         assert_eq!(s.snapped_ring_ids, ["s1", "s2"]);
 
         let sigil = s.grab_at(210.0, 600.0).unwrap();
-        s.move_stroke(sigil, 5.0, 0.0);
+        assert!(s.move_stroke(&sigil, 5.0, 0.0));
         assert_eq!(s.snapped_ids(), ["s1", "s2"], "moving the sigil leaves the ring alone");
 
         let ring_stroke = s.grab_at(210.0, 200.0).unwrap();
-        s.move_stroke(ring_stroke, 5.0, 0.0);
+        assert!(s.move_stroke(&ring_stroke, 5.0, 0.0));
         assert!(s.snapped_ids().is_empty(), "the snapped circle would stay put while its stroke moves");
         assert!(s.snapped_ring_ids.is_empty());
     }

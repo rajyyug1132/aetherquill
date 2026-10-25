@@ -392,8 +392,8 @@ fn main() {
     // ERASE toggle (chrome button) — pen deletes strokes instead of inking.
     let mut erase_mode = false;
     let mut erased_any = false;
-    // Touch-drag stroke moving: (stroke index, touch dev_id, last x, last y).
-    let mut moving: Option<(usize, i32, f64, f64)> = None;
+    // Touch-drag stroke moving: (stroke id, touch dev_id, last x, last y).
+    let mut moving: Option<(String, i32, f64, f64)> = None;
     let mut last_touch = Instant::now();
     let mut move_redraw = Instant::now();
     // Touch arrives as a stream of PRESS events per contact — debounce chrome
@@ -655,19 +655,19 @@ fn main() {
                     if event.x >= SIDEBAR_W && event.y >= STATUS_H {
                         let (x, y) = (event.x as f64, event.y as f64);
                         last_touch = Instant::now();
-                        match moving {
-                            Some((idx, id, lx, ly)) if id == event.dev_id => {
+                        match moving.clone() {
+                            Some((sid, id, lx, ly)) if id == event.dev_id => {
                                 let (dx, dy) = (x - lx, y - ly);
-                                session.move_stroke(idx, dx, dy);
-                                moving = Some((idx, id, x, y));
+                                session.move_stroke(&sid, dx, dy);
+                                moving = Some((sid, id, x, y));
                                 if move_redraw.elapsed().as_millis() > 150 {
                                     move_redraw = Instant::now();
                                     redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                                 }
                             }
                             None => {
-                                if let Some(idx) = session.grab_at(x, y) {
-                                    moving = Some((idx, event.dev_id, x, y));
+                                if let Some(sid) = session.grab_at(x, y) {
+                                    moving = Some((sid, event.dev_id, x, y));
                                 }
                             }
                             _ => {} // another finger - ignore
