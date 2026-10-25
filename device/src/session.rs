@@ -301,4 +301,253 @@ mod tests {
         assert!(s.snapped_ids().is_empty(), "the snapped circle would stay put while its stroke moves");
         assert!(s.snapped_ring_ids.is_empty());
     }
+
+    // ---- Deterministic fuzz: README Controls, random action sequences ----
+
+    /// xorshift64*: no dependency; the fixed seeds below make runs reproducible.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() >> 11) as usize % n.max(1)
+        }
+        fn coord(&mut self, lo: f64, hi: f64) -> f64 {
+            lo + (self.next() >> 11) as f64 / (1u64 << 53) as f64 * (hi - lo)
+        }
+    }
+
+    type Sv = (String, Vec<(f64, f64)>, Option<u64>);
+    fn sv(v: &[ScreenStroke]) -> Vec<Sv> {
+        v.iter().map(|s| (s.id.clone(), s.points.clone(), s.group)).collect()
+    }
+    fn state(s: &Session) -> (Vec<Sv>, Vec<Sv>) {
+        (sv(&s.strokes), sv(&s.redo))
+    }
+    fn sorted(mut v: Vec<Sv>) -> Vec<Sv> {
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    const FUZZ_SEEDS: [u64; 8] = [0x5eed_0001, 0xa11c_e5ed, 0x0bad_cafe, 0x1234_5678, 0xfeed_beef, 0xc0ff_ee01, 0x2468_ace0, 0x9e37_79b9];
+    const SEQUENCES_PER_SEED: usize = 250;
+    const ACTIONS_PER_SEQUENCE: usize = 80;
+
+    /// A point on an existing stroke (70%) so erase/grab usually hit, else anywhere.
+    fn target(rng: &mut Rng, s: &Session) -> (f64, f64) {
+        if !s.strokes.is_empty() && rng.below(10) < 7 {
+            let st = &s.strokes[rng.below(s.strokes.len())];
+            let p = st.points[rng.below(st.points.len())];
+            (p.0 + rng.coord(-10.0, 10.0), p.1 + rng.coord(-10.0, 10.0))
+        } else {
+            (rng.coord(120.0, 1400.0), rng.coord(70.0, 1870.0))
+        }
+    }
+
+    fn random_stroke(rng: &mut Rng) -> Vec<(f64, f64)> {
+        let (x, y) = (rng.coord(150.0, 1300.0), rng.coord(100.0, 1800.0));
+        (0..2 + rng.below(6)).map(|i| (x + i as f64 * 9.0, y + rng.coord(-20.0, 20.0))).collect()
+    }
+
+    #[test]
+    fn fuzz_random_sequences_keep_the_readme_controls_true() {
+        let mut actions = 0usize;
+        for seed in FUZZ_SEEDS {
+            let mut rng = Rng(seed);
+            for q in 0..SEQUENCES_PER_SEED {
+                let mut s = Session::new();
+                // id -> points of every stroke that should still exist (strokes + redo).
+                let mut alive: Vec<(String, Vec<(f64, f64)>)> = Vec::new();
+                let mut moving: Option<(String, f64, f64)> = None;
+                for step in 0..ACTIONS_PER_SEQUENCE {
+                    actions += 1;
+                    let act = rng.below(100);
+                    let name = match act {
+                        0..=24 => "commit",
+                        25..=36 => "undo",
+                        37..=48 => "redo",
+                        49..=52 => "clear",
+                        53..=60 => "erase",
+                        61..=64 => "pick",
+                        65..=70 => "grab",
+                        71..=82 => "drag",
+                        83..=85 => "release",
+                        86..=88 => "resume",
+                        89..=96 => "ring result",
+                        _ => "cast",
+                    };
+                    let ctx = format!("seed {seed:#x} sequence {q} step {step} ({name})");
+                    let before = state(&s);
+                    let (n, r) = (s.strokes.len(), s.redo.len());
+                    match name {
+                        "commit" => {
+                            let points = random_stroke(&mut rng);
+                            alive.retain(|(id, _)| !s.redo.iter().any(|t| &t.id == id));
+                            let id = s.commit(points.clone());
+                            alive.push((id.clone(), points));
+                            assert!(s.redo.is_empty(), "{ctx}: drawing must drop redo");
+                            assert_eq!(s.strokes.last().unwrap().id, id, "{ctx}");
+                        }
+                        "undo" => {
+                            let did = s.undo();
+                            assert_eq!(did, n > 0, "{ctx}");
+                            if did {
+                                assert!(s.strokes.len() < n && s.redo.len() > r, "{ctx}");
+                                assert_eq!(s.strokes.len() + s.redo.len(), n + r, "{ctx}");
+                                if rng.below(2) == 0 {
+                                    assert!(s.redo(), "{ctx}");
+                                    assert!(state(&s) == before, "{ctx}: undo then redo must round-trip");
+                                }
+                            } else {
+                                assert!(state(&s) == before, "{ctx}");
+                            }
+                        }
+                        "redo" => {
+                            let did = s.redo();
+                            assert_eq!(did, r > 0, "{ctx}");
+                            if did {
+                                assert!(s.strokes.len() > n && s.redo.len() < r, "{ctx}");
+                                assert_eq!(s.strokes.len() + s.redo.len(), n + r, "{ctx}");
+                                if rng.below(2) == 0 {
+                                    assert!(s.undo(), "{ctx}");
+                                    assert!(state(&s) == before, "{ctx}: redo then undo must round-trip");
+                                }
+                            } else {
+                                assert!(state(&s) == before, "{ctx}");
+                            }
+                        }
+                        "clear" => {
+                            s.last_activation = "sig".into(); // a cast, even if the page was empty
+                            s.clear();
+                            assert!(s.strokes.is_empty() && s.redo.len() == n + r, "{ctx}");
+                            assert!(s.last_activation.is_empty(), "{ctx}: same spell must cast again after CLEAR");
+                            if n > 0 && rng.below(2) == 0 {
+                                // "Erasing and clearing can be undone": redo taps bring the page back as drawn.
+                                for _ in 0..n {
+                                    if s.strokes.len() == n {
+                                        break;
+                                    }
+                                    assert!(s.redo(), "{ctx}");
+                                }
+                                assert!(state(&s) == before, "{ctx}: redo after CLEAR must restore the page exactly");
+                            }
+                        }
+                        "erase" => {
+                            let (x, y) = target(&mut rng, &s);
+                            let expect = s.strokes.iter().find(|t| t.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < ERASE_RADIUS)).map(|t| t.id.clone());
+                            let did = s.erase_at(x, y);
+                            assert_eq!(did, expect.is_some(), "{ctx}");
+                            if let Some(id) = expect {
+                                assert!(s.strokes.len() == n - 1 && s.redo.last().unwrap().id == id, "{ctx}");
+                                if rng.below(2) == 0 {
+                                    assert!(s.redo(), "{ctx}");
+                                    assert!(sorted(sv(&s.strokes)) == sorted(before.0.clone()) && sv(&s.redo) == before.1, "{ctx}: erase then redo must restore the stroke");
+                                }
+                            } else {
+                                assert!(state(&s) == before, "{ctx}");
+                            }
+                        }
+                        "pick" => {
+                            let spell: Vec<Vec<(f64, f64)>> = (0..2 + rng.below(4)).map(|_| random_stroke(&mut rng)).collect();
+                            s.last_activation = "sig".into();
+                            s.pick_catalogue(spell.clone());
+                            alive = s.strokes.iter().map(|t| (t.id.clone(), t.points.clone())).collect();
+                            assert_eq!(s.strokes.len(), spell.len(), "{ctx}");
+                            assert!(s.redo.is_empty() && s.previous_ring.is_none() && s.snapped_ring_ids.is_empty(), "{ctx}");
+                            assert!(s.last_activation.is_empty(), "{ctx}: a pick plays every time");
+                            let picked = state(&s);
+                            assert!(s.undo() && s.strokes.is_empty(), "{ctx}: Undo removes the picked spell");
+                            assert!(s.redo() && state(&s) == picked, "{ctx}: Redo brings the whole spell back");
+                        }
+                        "grab" => {
+                            let (x, y) = target(&mut rng, &s);
+                            let expect = s.strokes.iter().find(|t| t.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < GRAB_RADIUS)).map(|t| t.id.clone());
+                            let got = s.grab_at(x, y);
+                            assert_eq!(got, expect, "{ctx}");
+                            if let Some(id) = got {
+                                moving = Some((id, x, y));
+                            }
+                        }
+                        "drag" => {
+                            // The grabbed stroke may have been undone/erased/cleared/replaced since.
+                            if let Some((id, lx, ly)) = moving.clone() {
+                                let (x, y) = (lx + rng.coord(-30.0, 30.0), ly + rng.coord(-30.0, 30.0));
+                                let (dx, dy) = (x - lx, y - ly);
+                                let on_page = s.strokes.iter().any(|t| t.id == id);
+                                let was_snapped = s.snapped_ids().contains(&id);
+                                assert_eq!(s.move_stroke(&id, dx, dy), on_page, "{ctx}");
+                                if on_page {
+                                    for (aid, pts) in alive.iter_mut().filter(|(aid, _)| *aid == id) {
+                                        let _ = aid;
+                                        for p in pts.iter_mut() {
+                                            p.0 += dx;
+                                            p.1 += dy;
+                                        }
+                                    }
+                                    if was_snapped {
+                                        assert!(s.snapped_ids().is_empty() && s.snapped_ring_ids.is_empty(), "{ctx}: dragged ring stroke left snapped");
+                                    }
+                                }
+                                moving = Some((id, x, y));
+                            }
+                        }
+                        "release" => {
+                            // main.rs on finger-up: drop the ring, repaint, re-recognize.
+                            moving = None;
+                            s.previous_ring = None;
+                            s.resnap();
+                            assert!(s.snapped_ring_ids.is_empty(), "{ctx}");
+                        }
+                        "resume" => {
+                            s.resnap();
+                            assert_eq!(s.snapped_ring_ids, s.snapped_ids(), "{ctx}");
+                            assert!(state(&s) == before, "{ctx}: resume redraw must not change the page");
+                        }
+                        "ring result" => {
+                            let mut members: Vec<&str> = s.strokes.iter().filter(|_| rng.below(3) == 0).map(|t| t.id.as_str()).collect();
+                            if rng.below(8) == 0 {
+                                members.push("s-gone"); // result for a stroke since removed
+                            }
+                            let ring = (!members.is_empty() && rng.below(6) != 0).then(|| Ring { complete: rng.below(4) != 0, ..ring_over(&members) });
+                            let all_present = ring.as_ref().is_some_and(|rg| rg.complete && rg.stroke_ids.iter().all(|id| s.strokes.iter().any(|t| &t.id == id)));
+                            let ring_ids = ring.as_ref().map(|rg| rg.stroke_ids.clone()).unwrap_or_default();
+                            let was = s.snapped_ring_ids.clone();
+                            let changed = s.apply_ring(ring);
+                            let now = s.snapped_ids();
+                            assert_eq!(changed, now != was, "{ctx}");
+                            assert_eq!(s.snapped_ring_ids, now, "{ctx}");
+                            if all_present {
+                                assert_eq!(now, ring_ids, "{ctx}: a closed ring snaps");
+                            } else {
+                                assert!(now.is_empty(), "{ctx}");
+                            }
+                        }
+                        _ => {
+                            if !s.strokes.is_empty() {
+                                s.last_activation = format!("sig{}", rng.below(3));
+                            }
+                        }
+                    }
+
+                    // Invariants after every action.
+                    let mut seen: Vec<&str> = s.strokes.iter().chain(&s.redo).map(|t| t.id.as_str()).collect();
+                    let total = seen.len();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    assert_eq!(seen.len(), total, "{ctx}: duplicate stroke id");
+                    let mut have: Vec<(String, Vec<(f64, f64)>)> = s.strokes.iter().chain(&s.redo).map(|t| (t.id.clone(), t.points.clone())).collect();
+                    have.sort_by(|a, b| a.0.cmp(&b.0));
+                    alive.sort_by(|a, b| a.0.cmp(&b.0));
+                    assert!(have == alive, "{ctx}: a stroke was lost, duplicated or altered (page+redo has {} strokes, expected {})", have.len(), alive.len());
+                    assert!(s.snapped_ids().iter().all(|id| s.strokes.iter().any(|t| &t.id == id)), "{ctx}: snapped a stroke that is gone");
+                    assert!(!s.strokes.is_empty() || s.last_activation.is_empty(), "{ctx}: empty page remembers a cast");
+                }
+            }
+        }
+        println!("fuzz: {} seeds x {} sequences x {} actions = {actions} actions, no violations", FUZZ_SEEDS.len(), SEQUENCES_PER_SEED, ACTIONS_PER_SEQUENCE);
+    }
 }
