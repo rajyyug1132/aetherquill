@@ -489,7 +489,8 @@ fn main() {
             stroke_lat.clear();
             stroke_busy = 0;
             panel.close(); // the repaint below wipes it
-            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
+            // redraw_all blanks the status strip; the result restores it, the halo and the label (same signature, no replay).
+            repaint_and_recognize!(session.previous_ring.clone());
         }
 
         for event in events {
@@ -552,7 +553,8 @@ fn main() {
                         commit_stroke!(points);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
-                        redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
+                        // redraw_all blanks the status strip; the result restores it, the halo and the label (same signature, no replay).
+                        repaint_and_recognize!(session.previous_ring.clone());
                     }
                 }
                 // Real finger-up (rm-appload 0.5.3 sends it per lifted point):
