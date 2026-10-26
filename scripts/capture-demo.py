@@ -44,8 +44,13 @@ def to_rgb(raw: bytes) -> Image.Image:
     return Image.fromarray(np.dstack([r, g, b]).astype(np.uint8), "RGB")
 
 
-def find_buffer(host: str) -> str:
-    out = subprocess.run(["ssh", host, "ls -t /dev/shm/qtfb_* 2>/dev/null"], capture_output=True, text=True).stdout.split()
+def find_buffer(host: str, wait: float) -> str:
+    deadline = time.monotonic() + wait
+    while True:
+        out = subprocess.run(["ssh", host, "ls -t /dev/shm/qtfb_* 2>/dev/null"], capture_output=True, text=True).stdout.split()
+        if out or time.monotonic() > deadline:
+            break
+        time.sleep(2)
     if not out:
         sys.exit("no /dev/shm/qtfb_* on the tablet: start Aetherquill from AppLoad first")
     # ponytail: newest buffer = the app just launched; pass --buffer if AppLoad has several apps open
@@ -112,6 +117,7 @@ def main() -> None:
     ap.add_argument("--every", type=float, default=0.0, help="pause between frames on the tablet, seconds")
     ap.add_argument("--out", type=Path, default=Path("demo-capture"))
     ap.add_argument("--linkedin", action="store_true", help="also write a 1080x1350 (4:5) cut")
+    ap.add_argument("--wait", type=float, default=0, help="seconds to wait for Aetherquill to be launched")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -120,7 +126,7 @@ def main() -> None:
         sys.exit("ffmpeg not found on PATH")
     frames = a.out / "frames"
     frames.mkdir(parents=True, exist_ok=True)
-    buffer = a.buffer or find_buffer(a.host)
+    buffer = a.buffer or find_buffer(a.host, a.wait)
     print(f"recording {buffer} for {a.seconds:.0f}s\n\n{SHOT_LIST}\n")
     shots = record(a.host, buffer, a.seconds, frames, a.every)
     if not shots:
