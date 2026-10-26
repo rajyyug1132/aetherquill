@@ -593,6 +593,9 @@ fn main() {
                             }
                             catalogue::PanelTap::Pick(i) => i,
                         };
+                        // The pick replaces the page: a drag still waiting to commit
+                        // points at a stroke that's gone.
+                        moving = None;
                         // Replace the page (session.pick_catalogue: the old drawing is
                         // gone, the last activation forgotten so the spell plays
                         // every time), then ink the new strokes on screen.
