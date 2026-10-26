@@ -23,6 +23,10 @@ pub const SLOTS: i32 = 6;
 
 const LABELS: [&str; SLOTS as usize] = ["PEN", "ERASE", "UNDO", "REDO", "CLEAR", "SPELLS"];
 
+/// UNDO and REDO: one-shot actions, drawn without a box so they read
+/// differently from the modal tools and modes. Same 132 px hit box.
+pub const ONE_SHOT: [i32; 2] = [2, 3];
+
 /// Extra space between the toolbar's groups.
 pub const GROUP_GAP: i32 = 56;
 /// Slot 4: destructive, so it sits alone at the bottom edge.
@@ -58,6 +62,8 @@ fn icon_frame(fb: &mut Fb, slot: i32, active: bool) -> u16 {
     let fg = if active {
         fb.fill_rect(ICON_X, y, ICON_W, ICON_H, BLACK);
         WHITE
+    } else if ONE_SHOT.contains(&slot) {
+        BLACK // one-shot actions: open glyph + label, no box, never look "on"
     } else {
         fb.rect_outline(ICON_X, y, ICON_W, ICON_H, 4, BLACK);
         BLACK
@@ -261,6 +267,19 @@ mod tests {
         let closed = ink(&px);
         let area = (ICON_W * ICON_H) as usize;
         assert!(open > area / 2 && closed < area / 3, "open {open} vs closed {closed} of {area}");
+    }
+
+    #[test]
+    fn one_shot_actions_have_no_box_but_keep_their_hit_box() {
+        let mut px = vec![WHITE; (W * H) as usize];
+        draw_sidebar(&mut Fb { px: &mut px }, false);
+        // The box's top-left corner: drawn for modal tools/modes, empty for UNDO/REDO.
+        let corner = |slot: i32| px[((icon_y(slot) + 1) * W + ICON_X + 1) as usize] == BLACK;
+        assert!(corner(0) && corner(1) && corner(5) && corner(CLEAR_SLOT), "boxed: PEN ERASE SPELLS CLEAR");
+        assert!(!corner(2) && !corner(3), "UNDO/REDO unboxed");
+        for slot in ONE_SHOT {
+            assert_eq!(slot_at(ICON_X + 2, icon_y(slot) + 2), Some(slot), "corner still hits slot {slot}");
+        }
     }
 
     #[test]
