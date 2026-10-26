@@ -472,15 +472,15 @@ mod tests {
 
     const SENTINEL: u16 = 0x1234;
 
-    /// Sidebar (SIDEBAR_W 154 + 2px edge) and status strip (STATUS_H 64) from
+    /// Sidebar (SIDEBAR_W 154 + 2px edge) and status strip (STATUS_H 120) from
     /// main.rs; literal on purpose so the contract is stated independently.
     fn protected(x: i32, y: i32) -> bool {
-        x < 156 || y < 64
+        x < 156 || y < 120
     }
 
     #[test]
     fn canvas_consts_match_main_layout() {
-        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (154 + 2, 64));
+        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (154 + 2, 120));
     }
 
     fn params(overlay: Overlay) -> EffectParams {

@@ -48,7 +48,7 @@ pub fn load() -> Vec<CatalogueSpell> {
 
 // Panel over the drawing area, right of the sidebar, under the status strip.
 pub const PANEL_X: i32 = crate::chrome::SIDEBAR_W + 24;
-pub const PANEL_Y: i32 = 88;
+pub const PANEL_Y: i32 = crate::chrome::STATUS_H + 24;
 pub const PANEL_W: i32 = 1404 - PANEL_X - 24;
 const TITLE_H: i32 = 90;
 const ROW_H: i32 = 130;
@@ -665,7 +665,7 @@ mod tests {
     fn spells_fit_the_drawing_area() {
         for spell in load() {
             for (x, y) in spell.screen_strokes().into_iter().flatten() {
-                assert!((crate::chrome::CANVAS_LEFT as f64..1404.0).contains(&x) && (64.0..1872.0).contains(&y), "{} point {x},{y}", spell.id);
+                assert!((crate::chrome::CANVAS_LEFT as f64..1404.0).contains(&x) && (crate::chrome::STATUS_H as f64..1872.0).contains(&y), "{} point {x},{y}", spell.id);
             }
         }
     }

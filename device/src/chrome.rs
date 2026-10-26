@@ -13,7 +13,8 @@ pub const MIN_TAP: i32 = 130;
 pub const SIDEBAR_W: i32 = 154;
 /// First drawable column: right of the sidebar and its 2px divider.
 pub const CANVAS_LEFT: i32 = SIDEBAR_W + 2;
-pub const STATUS_H: i32 = 64;
+/// Headline + two wrapped detail lines, all at scale 3, plus the 4 px rule.
+pub const STATUS_H: i32 = 120;
 pub const ICON_X: i32 = 10;
 pub const ICON_W: i32 = 132;
 pub const ICON_H: i32 = 132;
@@ -190,16 +191,37 @@ pub fn spell_status(ir: &SpellIr) -> (String, String) {
 const STATUS_LEFT: i32 = SIDEBAR_W + 12;
 const STATUS_WIDTH: i32 = W - STATUS_LEFT - 12;
 const SPELL_SCALE: i32 = 3;
-const DETAIL_SCALE: i32 = 2;
+const DETAIL_SCALE: i32 = 3;
 pub const SPELL_LINE_CHARS: usize = ((STATUS_WIDTH - 16) / (8 * SPELL_SCALE)) as usize;
 pub const DETAIL_LINE_CHARS: usize = ((STATUS_WIDTH - 16) / (8 * DETAIL_SCALE)) as usize;
+
+/// Word-wraps `text` onto two lines of `n` chars (the second cut with "..."
+/// only if the whole thing still doesn't fit).
+pub fn wrap2(text: &str, n: usize) -> (String, String) {
+    if text.chars().count() <= n {
+        return (text.to_string(), String::new());
+    }
+    // status_lines joins sign figures and warnings with "  |  ": break there.
+    if let Some((a, b)) = text.split_once("  |  ") {
+        if a.chars().count() <= n {
+            return (a.to_string(), fit(b, n));
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let split = chars[..=n].iter().rposition(|&c| c == ' ').filter(|&i| i > 0).unwrap_or(n);
+    let first: String = chars[..split].iter().collect();
+    let rest: String = chars[split..].iter().collect();
+    (first.trim_end().to_string(), fit(rest.trim_start(), n))
+}
 
 /// Draws the two status lines (each truncated to fit the strip) right of the
 /// sidebar. Returns the dirty rect (x, y, w, h) for the caller to push.
 pub fn draw_status(fb: &mut Fb, line1: &str, line2: &str) -> (i32, i32, i32, i32) {
     fb.fill_rect(STATUS_LEFT, 0, STATUS_WIDTH, STATUS_H - 4, WHITE);
     fb.text(STATUS_LEFT + 8, 8, &fit(line1, SPELL_LINE_CHARS), SPELL_SCALE, BLACK);
-    fb.text(STATUS_LEFT + 8, 38, &fit(line2, DETAIL_LINE_CHARS), DETAIL_SCALE, BLACK);
+    let (a, b) = wrap2(line2, DETAIL_LINE_CHARS);
+    fb.text(STATUS_LEFT + 8, 44, &a, DETAIL_SCALE, BLACK);
+    fb.text(STATUS_LEFT + 8, 80, &b, DETAIL_SCALE, BLACK);
     (STATUS_LEFT, 0, STATUS_WIDTH, STATUS_H)
 }
 
@@ -294,6 +316,22 @@ mod tests {
         let (_, _, _, h) = draw_status(&mut Fb { px: &mut st }, "Active: Fire  quality 92%  stability 79%", "column 100%  force 100 spread 0 range 100 grav 100");
         assert!((STATUS_H - 4..STATUS_H).all(|y| (0..W).all(|x| st[(y * W + x) as usize] == WHITE)), "status text clears the rule");
         assert_eq!(h, STATUS_H);
+    }
+
+    #[test]
+    fn status_detail_wraps_whole_at_full_size() {
+        let detail = "column 100%  force 100 spread 0 range 100 grav 100  |  symbol_ambiguous";
+        let (a, b) = wrap2(detail, DETAIL_LINE_CHARS);
+        assert!(a.chars().count() <= DETAIL_LINE_CHARS && b.chars().count() <= DETAIL_LINE_CHARS);
+        assert_eq!(format!("{a} | {b}").split_whitespace().collect::<Vec<_>>(), detail.split_whitespace().collect::<Vec<_>>(), "nothing cut");
+        let plain = "ring not closed: the sigil sits too close to the edge of the ring, move it in";
+        let (c, d) = wrap2(plain, DETAIL_LINE_CHARS);
+        assert_eq!(format!("{c} {d}"), plain, "no separator: word wrap, nothing cut");
+        assert_eq!(b, "symbol_ambiguous", "breaks at the separator, drops it");
+        assert_eq!(wrap2("short", 50), ("short".into(), String::new()));
+        assert!(DETAIL_LINE_CHARS * 2 >= 75, "at least the old one-line capacity");
+        // Three lines + the rule fit the strip.
+        assert!(80 + 8 * DETAIL_SCALE <= STATUS_H - 4);
     }
 
     #[test]
