@@ -144,6 +144,61 @@ fn draw_nav_button(fb: &mut Fb, total: usize, nav: Nav, enabled: bool) {
     fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, c);
 }
 
+/// The panel's state and tap rules, host-testable; main.rs only draws and
+/// refreshes what these return.
+#[derive(Debug, Default)]
+pub struct Panel {
+    pub open: bool,
+    pub page: usize,
+}
+
+/// What a canvas tap did while the panel was open.
+#[derive(Debug, PartialEq)]
+pub enum PanelTap {
+    /// PREV/NEXT: still open on `page` (clamped at both ends).
+    Turned,
+    /// A row: closed, ink spell `i`. The rest of the finger contact is ignored.
+    Pick(usize),
+    /// Anywhere else: closed, nothing inked. The rest of the contact is ignored.
+    Dismissed,
+}
+
+impl Panel {
+    /// The SPELLS button: opens on the first page, or closes. Returns `open`.
+    pub fn toggle(&mut self) -> bool {
+        self.open = !self.open;
+        if self.open {
+            self.page = 0;
+        }
+        self.open
+    }
+
+    /// A canvas tap while open (callers check `open` first).
+    pub fn tap(&mut self, x: i32, y: i32, total: usize) -> PanelTap {
+        if let Some(nav) = nav_at(x, y, total) {
+            self.page = turn(self.page, nav, total);
+            return PanelTap::Turned;
+        }
+        self.open = false;
+        match spell_at(x, y, total, self.page) {
+            Some(i) => PanelTap::Pick(i),
+            None => PanelTap::Dismissed,
+        }
+    }
+
+    /// The page was repainted under the panel (resume, a discarded stroke,
+    /// undo/redo/clear): it's gone from the screen, so it's closed too.
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    /// Recognition results and drag commits repaint the page: hold them while
+    /// the panel is up, or they'd wipe it on screen while taps still hit it.
+    pub fn allows_repaint(&self) -> bool {
+        !self.open
+    }
+}
+
 pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
     let total = spells.len();
     let page = page.min(page_count(total) - 1);
@@ -166,6 +221,73 @@ pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
         let label = format!("Page {}/{}", page + 1, page_count(total));
         let w = label.len() as i32 * 24;
         fb.text(PANEL_X + (PANEL_W - w) / 2, nav_y(total) + (NAV_H - 24) / 2, &label, 3, BLACK);
+    }
+}
+
+#[cfg(test)]
+mod panel_state_tests {
+    use super::*;
+
+    const TOTAL: usize = 12;
+
+    fn row_center(i: usize) -> (i32, i32) {
+        (PANEL_X + 40, row_y(i) + ROW_H / 2)
+    }
+
+    fn nav_center(nav: Nav) -> (i32, i32) {
+        (nav_x(nav) + NAV_W / 2, nav_y(TOTAL) + NAV_H / 2)
+    }
+
+    #[test]
+    fn toggle_opens_on_the_first_page_and_closes() {
+        let mut p = Panel { open: false, page: 1 };
+        assert!(p.toggle());
+        assert_eq!(p.page, 0, "reopens on page 1");
+        assert!(!p.allows_repaint(), "results wait while it's up");
+        assert!(!p.toggle());
+        assert!(p.allows_repaint());
+    }
+
+    #[test]
+    fn page_turns_keep_it_open_and_clamp() {
+        let mut p = Panel::default();
+        p.toggle();
+        let (px, py) = nav_center(Nav::Prev);
+        assert_eq!(p.tap(px, py, TOTAL), PanelTap::Turned);
+        assert_eq!((p.open, p.page), (true, 0), "PREV on page 1 stays put");
+        let (nx, ny) = nav_center(Nav::Next);
+        for _ in 0..3 {
+            assert_eq!(p.tap(nx, ny, TOTAL), PanelTap::Turned);
+        }
+        assert_eq!((p.open, p.page), (true, page_count(TOTAL) - 1), "NEXT stops at the last page");
+    }
+
+    #[test]
+    fn a_row_picks_that_pages_spell_and_closes() {
+        let mut p = Panel::default();
+        p.toggle();
+        let (x, y) = row_center(2);
+        assert_eq!(p.tap(x, y, TOTAL), PanelTap::Pick(2));
+        assert!(!p.open);
+        p.toggle();
+        let (nx, ny) = nav_center(Nav::Next);
+        p.tap(nx, ny, TOTAL);
+        let (x, y) = row_center(1);
+        assert_eq!(p.tap(x, y, TOTAL), PanelTap::Pick(ROWS_PER_PAGE + 1), "page 2, second row");
+        assert!(!p.open);
+    }
+
+    #[test]
+    fn a_tap_elsewhere_dismisses_and_a_repaint_closes() {
+        let mut p = Panel::default();
+        p.toggle();
+        assert_eq!(p.tap(PANEL_X + PANEL_W / 2, PANEL_Y + 10, TOTAL), PanelTap::Dismissed, "title");
+        assert!(!p.open);
+        p.toggle();
+        assert_eq!(p.tap(PANEL_X + PANEL_W / 2, 1800, TOTAL), PanelTap::Dismissed, "below the panel");
+        p.toggle();
+        p.close();
+        assert!(!p.open && p.allows_repaint());
     }
 }
 

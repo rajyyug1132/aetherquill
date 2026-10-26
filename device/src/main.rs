@@ -352,8 +352,7 @@ fn main() {
 
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
-    let mut catalogue_open = false;
-    let mut catalogue_page = 0usize;
+    let mut panel = catalogue::Panel::default();
     // After a catalogue pick, the same finger's queued touch events must not
     // drag the freshly inked strokes: ignore canvas touch until it lifts.
     let mut touch_until_lift_ignored = false;
@@ -413,7 +412,7 @@ fn main() {
             stroke_lat.clear();
             stroke_busy = 0;
             moving = None;
-            catalogue_open = false; // the repaint below wipes the panel
+            panel.close(); // the repaint below wipes it
             // The result restores the status line; same signature, so no replay.
             repaint_and_recognize!(session.previous_ring.clone());
         }
@@ -489,7 +488,7 @@ fn main() {
             ink_pending.clear();
             stroke_lat.clear();
             stroke_busy = 0;
-            catalogue_open = false; // the repaint below wipes the panel
+            panel.close(); // the repaint below wipes it
             redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
         }
 
@@ -499,7 +498,7 @@ fn main() {
                     let ts = pen_ts.pop_front();
                     let (x, y) = (event.x as f64, event.y as f64);
                     last_pen_event = Instant::now();
-                    if catalogue_open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
+                    if panel.open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
                         continue;
                     }
                     if erase_mode {
@@ -570,23 +569,27 @@ fn main() {
                         continue;
                     }
                     // Panel open: a tap picks a spell; anywhere else closes it.
-                    if catalogue_open && event.x >= SIDEBAR_W {
+                    if panel.open && event.x >= SIDEBAR_W {
                         if last_chrome_tap.elapsed().as_millis() < 250 {
                             continue;
                         }
                         last_chrome_tap = Instant::now();
-                        if let Some(nav) = catalogue::nav_at(event.x, event.y, spell_catalogue.len()) {
-                            catalogue_page = catalogue::turn(catalogue_page, nav, spell_catalogue.len());
-                            catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
-                            let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
-                            continue;
-                        }
-                        catalogue_open = false;
-                        let Some(i) = catalogue::spell_at(event.x, event.y, spell_catalogue.len(), catalogue_page) else {
-                            touch_until_lift_ignored = true;
-                            last_touch = Instant::now();
-                            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
-                            continue;
+                        let i = match panel.tap(event.x, event.y, spell_catalogue.len()) {
+                            catalogue::PanelTap::Turned => {
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, panel.page);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                                continue;
+                            }
+                            catalogue::PanelTap::Dismissed => {
+                                touch_until_lift_ignored = true;
+                                last_touch = Instant::now();
+                                // Repaint + recognize: the result brings back the status
+                                // line, halo and label the panel covered (same
+                                // signature, so no replay).
+                                repaint_and_recognize!(session.previous_ring.clone());
+                                continue;
+                            }
+                            catalogue::PanelTap::Pick(i) => i,
                         };
                         // Replace the page (session.pick_catalogue: the old drawing is
                         // gone, the last activation forgotten so the spell plays
@@ -654,25 +657,24 @@ fn main() {
                             continue;
                         }
                         Some(2) => {
-                            catalogue_open = false;
+                            panel.close();
                             session.undo();
                         }
                         Some(3) => {
-                            catalogue_open = false;
+                            panel.close();
                             session.redo();
                         }
                         Some(4) => {
-                            catalogue_open = false;
+                            panel.close();
                             session.clear(); // CLEAR is undoable via redo taps
                         }
                         Some(5) => {
-                            catalogue_open = !catalogue_open;
-                            if catalogue_open {
-                                catalogue_page = 0;
-                                catalogue::draw_panel(&mut fb, &spell_catalogue, catalogue_page);
+                            if panel.toggle() {
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, panel.page);
                                 let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
                             } else {
-                                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
+                                // As a dismiss: the result restores what the panel covered.
+                                repaint_and_recognize!(session.previous_ring.clone());
                             }
                             continue;
                         }
@@ -713,7 +715,7 @@ fn main() {
         // snap repaints the page and would wipe live ink), and never under an
         // open catalogue panel (a redraw/animation would wipe it on screen
         // while taps still hit-test it). They wait in the channel until then.
-        if !pen_down && !catalogue_open {
+        if !pen_down && panel.allows_repaint() {
             if let Some(outcome) = recognizer.latest() {
                 apply_outcome!(outcome);
             }
@@ -724,7 +726,7 @@ fn main() {
         }
 
         // Finger lifted mid-drag: commit the move, re-recognize.
-        if moving.is_some() && last_touch.elapsed().as_millis() > 400 {
+        if moving.is_some() && last_touch.elapsed().as_millis() > 400 && panel.allows_repaint() {
             moving = None;
             // A dragged ring stroke makes the old snapped circle wrong: drop it
             // until the result re-snaps.
