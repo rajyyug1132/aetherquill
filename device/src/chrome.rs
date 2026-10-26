@@ -23,19 +23,32 @@ pub const SLOTS: i32 = 6;
 
 const LABELS: [&str; SLOTS as usize] = ["PEN", "ERASE", "UNDO", "REDO", "CLEAR", "SPELLS"];
 
+/// Extra space between the toolbar's groups.
+pub const GROUP_GAP: i32 = 56;
+/// Slot 4: destructive, so it sits alone at the bottom edge.
+pub const CLEAR_SLOT: i32 = 4;
+
+/// Top of each slot's box. Grouped by function (xochitl / GoodNotes style):
+/// PEN ERASE | UNDO REDO | SPELLS from the top, and CLEAR alone at the
+/// bottom edge, far from UNDO so a slip can't reach it.
 pub fn icon_y(slot: i32) -> i32 {
-    ICON_TOP + slot * (ICON_H + ICON_GAP)
+    let step = ICON_H + ICON_GAP;
+    match slot {
+        0 | 1 => ICON_TOP + slot * step,
+        2 | 3 => ICON_TOP + slot * step + GROUP_GAP,
+        5 => ICON_TOP + 4 * step + 2 * GROUP_GAP,
+        CLEAR_SLOT => H - ICON_TOP - ICON_H,
+        _ => panic!("no toolbar slot {slot}"),
+    }
 }
 
-/// Which toolbar slot a tap at (x, y) lands in (None = gap, margin or below
-/// the toolbar). The hit box is exactly the drawn icon box.
+/// Which toolbar slot a tap at (x, y) lands in (None = gap, margin or empty
+/// sidebar). The hit box is exactly the drawn icon box.
 pub fn slot_at(x: i32, y: i32) -> Option<i32> {
-    let rel = y - ICON_TOP;
-    if rel < 0 || !(ICON_X..ICON_X + ICON_W).contains(&x) {
+    if !(ICON_X..ICON_X + ICON_W).contains(&x) {
         return None;
     }
-    let slot = rel / (ICON_H + ICON_GAP);
-    (slot < SLOTS && rel % (ICON_H + ICON_GAP) < ICON_H).then_some(slot)
+    (0..SLOTS).find(|&s| (icon_y(s)..icon_y(s) + ICON_H).contains(&y))
 }
 
 /// Icon box + caption; active tools invert (black fill, white glyph). Returns
@@ -100,9 +113,16 @@ pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     draw_arrow_icon(fb, 2, false);
     draw_arrow_icon(fb, 3, true);
 
-    // Slot 4: clear - X.
-    let fg = icon_frame(fb, 4, false);
-    let (cx, cy) = glyph_center(4);
+    // Group dividers: short bold rules in the gaps between groups.
+    for y in [icon_y(2) - (ICON_GAP + GROUP_GAP) / 2, icon_y(5) - (ICON_GAP + GROUP_GAP) / 2, icon_y(CLEAR_SLOT) - (ICON_GAP + GROUP_GAP) / 2] {
+        fb.fill_rect(ICON_X + 24, y - 2, ICON_W - 48, 4, BLACK);
+    }
+
+    // Slot 4: clear - X, in a double frame (destructive).
+    let fg = icon_frame(fb, CLEAR_SLOT, false);
+    let y = icon_y(CLEAR_SLOT);
+    fb.rect_outline(ICON_X + 9, y + 9, ICON_W - 18, ICON_H - 18, 2, BLACK);
+    let (cx, cy) = glyph_center(CLEAR_SLOT);
     fb.line(cx - 26, cy - 26, cx + 26, cy + 26, 6, fg);
     fb.line(cx + 26, cy - 26, cx - 26, cy + 26, 6, fg);
 
@@ -217,8 +237,28 @@ mod tests {
             assert_eq!(slot_at(ICON_X + ICON_W, icon_y(slot) + 10), None, "right margin");
         }
         assert_eq!(slot_at(center(0).0, ICON_TOP - 1), None, "above the first icon");
-        assert_eq!(slot_at(center(0).0, icon_y(SLOTS) + 10), None, "below the last icon");
+        assert_eq!(slot_at(center(0).0, icon_y(5) + ICON_H + 10), None, "below SPELLS");
+        assert_eq!(slot_at(center(0).0, icon_y(CLEAR_SLOT) - 10), None, "above CLEAR");
         assert_eq!(slot_at(SIDEBAR_W + 50, center(0).1), None, "canvas side");
+    }
+
+    #[test]
+    fn groups_are_separated_and_clear_is_isolated() {
+        let bottom = |s: i32| icon_y(s) + ICON_H;
+        // Within a group: the normal gap. Between groups: a wider one.
+        assert_eq!(icon_y(1) - bottom(0), ICON_GAP);
+        assert_eq!(icon_y(3) - bottom(2), ICON_GAP);
+        assert!(icon_y(2) - bottom(1) >= ICON_GAP + GROUP_GAP);
+        assert!(icon_y(5) - bottom(3) >= ICON_GAP + GROUP_GAP);
+        // CLEAR: on screen, alone at the bottom, far from UNDO/REDO.
+        assert_eq!(bottom(CLEAR_SLOT), H - ICON_TOP);
+        assert!(icon_y(CLEAR_SLOT) - bottom(3) >= 600, "a slip from REDO can't reach CLEAR");
+        // No two boxes overlap.
+        for a in 0..SLOTS {
+            for b in a + 1..SLOTS {
+                assert!(bottom(a) <= icon_y(b) || bottom(b) <= icon_y(a), "slots {a} and {b} overlap");
+            }
+        }
     }
 
     #[test]
@@ -259,7 +299,10 @@ mod tests {
 
     #[test]
     fn toolbar_fits_with_room_for_two_more_slots() {
-        assert!(icon_y(SLOTS + 1) + ICON_H <= H);
+        // Free space between SPELLS and the bottom CLEAR holds two more boxes
+        // plus a group gap (the stacked layout's icon_y(SLOTS + 1) probe).
+        let free = icon_y(CLEAR_SLOT) - (icon_y(5) + ICON_H);
+        assert!(free >= 2 * (ICON_H + ICON_GAP) + GROUP_GAP, "free {free}");
         assert!(ICON_X + ICON_W + ICON_X <= SIDEBAR_W - 2, "icons sit inside the sidebar, clear of the divider");
         assert_eq!(CANVAS_LEFT, SIDEBAR_W + 2);
     }
