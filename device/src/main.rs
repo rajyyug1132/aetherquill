@@ -413,6 +413,7 @@ fn main() {
             stroke_lat.clear();
             stroke_busy = 0;
             moving = None;
+            catalogue_open = false; // the repaint below wipes the panel
             // The result restores the status line; same signature, so no replay.
             repaint_and_recognize!(session.previous_ring.clone());
         }
@@ -488,6 +489,7 @@ fn main() {
             ink_pending.clear();
             stroke_lat.clear();
             stroke_busy = 0;
+            catalogue_open = false; // the repaint below wipes the panel
             redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
         }
 
@@ -581,6 +583,8 @@ fn main() {
                         }
                         catalogue_open = false;
                         let Some(i) = catalogue::spell_at(event.x, event.y, spell_catalogue.len(), catalogue_page) else {
+                            touch_until_lift_ignored = true;
+                            last_touch = Instant::now();
                             redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                             continue;
                         };
