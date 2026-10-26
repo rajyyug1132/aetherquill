@@ -88,6 +88,7 @@ fn main() {
     for page in 0..pages.min(2) {
         let mut px = blank(false, "Draw a spell ring to begin", "");
         catalogue::draw_panel(&mut Fb { px: &mut px }, &paged, page);
+        chrome::draw_spells_button(&mut Fb { px: &mut px }, true);
         write_ppm(&format!("ui_preview_p{}.ppm", page + 1), &px);
     }
 
@@ -95,5 +96,6 @@ fn main() {
     let short = catalogue::load();
     let mut px = blank(true, "Prepared: Water  quality 100%  stability 100%", &"levitation 100%  force 40 spread 50 range 42 grav 0  |  ring is slightly open near the top".to_string());
     catalogue::draw_panel(&mut Fb { px: &mut px }, &short, 0);
+    chrome::draw_spells_button(&mut Fb { px: &mut px }, true);
     write_ppm("ui_preview_short.ppm", &px);
 }

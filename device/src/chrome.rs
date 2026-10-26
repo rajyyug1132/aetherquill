@@ -126,13 +126,21 @@ pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     fb.line(cx - 26, cy - 26, cx + 26, cy + 26, 6, fg);
     fb.line(cx + 26, cy - 26, cx - 26, cy + 26, 6, fg);
 
-    // Slot 5: Spell Catalogue - a page of listed spells.
-    let fg = icon_frame(fb, 5, false);
+    draw_spells_button(fb, false);
+}
+
+/// Slot 5, SPELLS: a page of listed spells. Inverted (solid black, white
+/// glyph) while the catalogue panel is open, like an active tool, so the
+/// open state reads at a glance. Returns its box for a partial refresh.
+pub fn draw_spells_button(fb: &mut Fb, open: bool) -> (i32, i32, i32, i32) {
+    fb.fill_rect(ICON_X, icon_y(5), ICON_W, ICON_H, WHITE);
+    let fg = icon_frame(fb, 5, open);
     let (cx, cy) = glyph_center(5);
     fb.rect_outline(cx - 26, cy - 32, 52, 66, 4, fg);
     for row in 0..3 {
         fb.fill_rect(cx - 16, cy - 16 + row * 16, 32, 4, fg);
     }
+    (ICON_X, icon_y(5), ICON_W, ICON_H)
 }
 
 /// Fits `text` into `max_chars`: whole if it fits, else cut back to a word
@@ -240,6 +248,19 @@ mod tests {
         assert_eq!(slot_at(center(0).0, icon_y(5) + ICON_H + 10), None, "below SPELLS");
         assert_eq!(slot_at(center(0).0, icon_y(CLEAR_SLOT) - 10), None, "above CLEAR");
         assert_eq!(slot_at(SIDEBAR_W + 50, center(0).1), None, "canvas side");
+    }
+
+    #[test]
+    fn spells_button_inverts_while_the_panel_is_open() {
+        let mut px = vec![WHITE; (W * H) as usize];
+        let ink = |px: &[u16]| (icon_y(5)..icon_y(5) + ICON_H).flat_map(|y| (ICON_X..ICON_X + ICON_W).map(move |x| (y * W + x) as usize)).filter(|&i| px[i] == BLACK).count();
+        let boxed = draw_spells_button(&mut Fb { px: &mut px }, true);
+        let open = ink(&px);
+        assert_eq!(boxed, (ICON_X, icon_y(5), ICON_W, ICON_H));
+        draw_spells_button(&mut Fb { px: &mut px }, false);
+        let closed = ink(&px);
+        let area = (ICON_W * ICON_H) as usize;
+        assert!(open > area / 2 && closed < area / 3, "open {open} vs closed {closed} of {area}");
     }
 
     #[test]
