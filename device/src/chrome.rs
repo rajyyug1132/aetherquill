@@ -101,7 +101,7 @@ fn draw_arrow_icon(fb: &mut Fb, slot: i32, flip: bool) {
 
 pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     fb.fill_rect(0, 0, SIDEBAR_W, H, WHITE);
-    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, BLACK); // pure black: e-ink dithers gray
+    fb.fill_rect(SIDEBAR_W - 4, 0, 4, H, BLACK); // 4 px, grown into the sidebar; the canvas edge stays at SIDEBAR_W + 2
 
     // Slot 0: pen - nib pointing down-left.
     let fg = icon_frame(fb, 0, !erase_mode);
@@ -121,7 +121,7 @@ pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
 
     // Group dividers: short bold rules in the gaps between groups.
     for y in [icon_y(2) - (ICON_GAP + GROUP_GAP) / 2, icon_y(5) - (ICON_GAP + GROUP_GAP) / 2, icon_y(CLEAR_SLOT) - (ICON_GAP + GROUP_GAP) / 2] {
-        fb.fill_rect(ICON_X + 24, y - 2, ICON_W - 48, 4, BLACK);
+        fb.fill_rect(ICON_X + 24, y - 3, ICON_W - 48, 6, BLACK);
     }
 
     // Slot 4: clear - X, in a double frame (destructive).
@@ -206,7 +206,7 @@ pub fn draw_status(fb: &mut Fb, line1: &str, line2: &str) -> (i32, i32, i32, i32
 /// Sidebar + the status strip's divider: the static chrome of a fresh page.
 pub fn draw_chrome(fb: &mut Fb, erase_mode: bool) {
     draw_sidebar(fb, erase_mode);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, BLACK);
+    fb.fill_rect(SIDEBAR_W, STATUS_H - 4, W - SIDEBAR_W, 4, BLACK); // 4 px, grown into the strip (status text ends above it)
 }
 
 /// Height of the toolbar region to refresh after a tool change.
@@ -280,6 +280,20 @@ mod tests {
         for slot in ONE_SHOT {
             assert_eq!(slot_at(ICON_X + 2, icon_y(slot) + 2), Some(slot), "corner still hits slot {slot}");
         }
+    }
+
+    #[test]
+    fn chrome_rules_are_bold_and_stay_off_the_canvas() {
+        let mut px = vec![WHITE; (W * H) as usize];
+        draw_chrome(&mut Fb { px: &mut px }, false);
+        let black = |x: i32, y: i32| px[(y * W + x) as usize] == BLACK;
+        assert!((SIDEBAR_W - 4..SIDEBAR_W).all(|x| black(x, 900)), "sidebar edge 4 px");
+        assert!((STATUS_H - 4..STATUS_H).all(|y| black(700, y)), "status rule 4 px");
+        assert!(!black(CANVAS_LEFT, 900) && !black(700, STATUS_H), "nothing on the canvas side");
+        let mut st = vec![WHITE; (W * H) as usize];
+        let (_, _, _, h) = draw_status(&mut Fb { px: &mut st }, "Active: Fire  quality 92%  stability 79%", "column 100%  force 100 spread 0 range 100 grav 100");
+        assert!((STATUS_H - 4..STATUS_H).all(|y| (0..W).all(|x| st[(y * W + x) as usize] == WHITE)), "status text clears the rule");
+        assert_eq!(h, STATUS_H);
     }
 
     #[test]
