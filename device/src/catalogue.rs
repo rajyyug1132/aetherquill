@@ -7,7 +7,7 @@
 use serde::Deserialize;
 
 use crate::chrome::fit;
-use crate::render::{Fb, BLACK, GRAY, WHITE};
+use crate::render::{Fb, BLACK, WHITE};
 
 /// Screen px -> web-canvas px, so the vendored CONFIG's pixel-tuned
 /// thresholds (ring.minRadius 70 etc.) hold on the 702x936 canvas.
@@ -48,7 +48,7 @@ pub fn load() -> Vec<CatalogueSpell> {
 
 // Panel over the drawing area, right of the sidebar, under the status strip.
 pub const PANEL_X: i32 = crate::chrome::SIDEBAR_W + 24;
-pub const PANEL_Y: i32 = 88;
+pub const PANEL_Y: i32 = crate::chrome::STATUS_H + 24;
 pub const PANEL_W: i32 = 1404 - PANEL_X - 24;
 const TITLE_H: i32 = 90;
 const ROW_H: i32 = 130;
@@ -137,11 +137,23 @@ pub fn turn(page: usize, nav: Nav, total: usize) -> usize {
 
 fn draw_nav_button(fb: &mut Fb, total: usize, nav: Nav, enabled: bool) {
     let (x, y) = (nav_x(nav), nav_y(total));
-    let c = if enabled { BLACK } else { GRAY };
-    fb.rect_outline(x, y, NAV_W, NAV_H, if enabled { 4 } else { 2 }, c);
+    // Pure black/white (e-ink dithers gray): enabled = solid 4px frame,
+    // disabled = dashed 2px frame. The label stays either way.
+    if enabled {
+        fb.rect_outline(x, y, NAV_W, NAV_H, 4, BLACK);
+    } else {
+        for d in (0..NAV_W).step_by(20) {
+            fb.fill_rect(x + d, y, 12.min(NAV_W - d), 4, BLACK);
+            fb.fill_rect(x + d, y + NAV_H - 4, 12.min(NAV_W - d), 4, BLACK);
+        }
+        for d in (0..NAV_H).step_by(20) {
+            fb.fill_rect(x, y + d, 4, 12.min(NAV_H - d), BLACK);
+            fb.fill_rect(x + NAV_W - 4, y + d, 4, 12.min(NAV_H - d), BLACK);
+        }
+    }
     let label = if nav == Nav::Prev { "< PREV" } else { "NEXT >" };
     let w = label.len() as i32 * 32;
-    fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, c);
+    fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, BLACK);
 }
 
 /// The panel's state and tap rules, host-testable; main.rs only draws and
@@ -204,23 +216,23 @@ pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
     let page = page.min(page_count(total) - 1);
     let h = panel_h_for(total);
     fb.fill_rect(PANEL_X, PANEL_Y, PANEL_W, h, WHITE);
-    fb.rect_outline(PANEL_X, PANEL_Y, PANEL_W, h, 3, BLACK);
+    fb.rect_outline(PANEL_X, PANEL_Y, PANEL_W, h, 5, BLACK);
     fb.text(PANEL_X + 28, PANEL_Y + 30, "Spell Catalogue", 4, BLACK);
     let name_chars = ((PANEL_W - 56) / 24) as usize;
     let line_chars = ((PANEL_W - 56) / 16) as usize;
     for (i, spell) in spells[page_range(total, page)].iter().enumerate() {
         let y = row_y(i);
-        fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 2, GRAY);
+        fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 4, BLACK);
         fb.text(PANEL_X + 28, y + 26, &fit(&spell.name, name_chars), 3, BLACK);
-        // Black, not gray, for legibility of the 2px-stroke text (unverified on hardware).
+        // Scale 2 so every description fits whole (scale 3 would cut them).
         fb.text(PANEL_X + 28, y + 74, &fit(&spell.line, line_chars), 2, BLACK);
     }
     if page_count(total) > 1 {
         draw_nav_button(fb, total, Nav::Prev, page > 0);
         draw_nav_button(fb, total, Nav::Next, page + 1 < page_count(total));
         let label = format!("Page {}/{}", page + 1, page_count(total));
-        let w = label.len() as i32 * 24;
-        fb.text(PANEL_X + (PANEL_W - w) / 2, nav_y(total) + (NAV_H - 24) / 2, &label, 3, BLACK);
+        let w = label.len() as i32 * 32;
+        fb.text(PANEL_X + (PANEL_W - w) / 2, nav_y(total) + (NAV_H - 32) / 2, &label, 4, BLACK);
     }
 }
 
@@ -288,6 +300,29 @@ mod panel_state_tests {
         p.toggle();
         p.close();
         assert!(!p.open && p.allows_repaint());
+    }
+}
+
+#[cfg(test)]
+mod stroke_weight_tests {
+    use super::*;
+    use crate::render::{H, W};
+
+    #[test]
+    fn panel_rules_and_page_label_are_bold_and_clear_of_the_buttons() {
+        let spells: Vec<CatalogueSpell> = load();
+        let mut px = vec![WHITE; (W * H) as usize];
+        draw_panel(&mut Fb { px: &mut px }, &spells, 1);
+        let black = |x: i32, y: i32| px[(y * W + x) as usize] == BLACK;
+        // Row divider of row 1 and the panel's left edge: 4+ px solid.
+        assert!((0..4).all(|d| black(PANEL_X + PANEL_W / 2, row_y(1) + d)), "divider >= 4 px");
+        assert!((0..5).all(|d| black(PANEL_X + d, PANEL_Y + 200)), "panel border >= 5 px");
+        // Disabled NEXT on the last page: dashed but 4 px deep.
+        let (nx, ny) = (nav_x(Nav::Next), nav_y(spells.len()));
+        assert!((0..4).all(|d| black(nx + 2, ny + d)), "dashed frame >= 4 px");
+        let label_w = "Page 2/2".len() as i32 * 32;
+        let lx = PANEL_X + (PANEL_W - label_w) / 2;
+        assert!(lx > nav_x(Nav::Prev) + NAV_W + 16 && lx + label_w < nx - 16, "page label clear of PREV/NEXT");
     }
 }
 
@@ -630,7 +665,7 @@ mod tests {
     fn spells_fit_the_drawing_area() {
         for spell in load() {
             for (x, y) in spell.screen_strokes().into_iter().flatten() {
-                assert!((crate::chrome::CANVAS_LEFT as f64..1404.0).contains(&x) && (64.0..1872.0).contains(&y), "{} point {x},{y}", spell.id);
+                assert!((crate::chrome::CANVAS_LEFT as f64..1404.0).contains(&x) && (crate::chrome::STATUS_H as f64..1872.0).contains(&y), "{} point {x},{y}", spell.id);
             }
         }
     }

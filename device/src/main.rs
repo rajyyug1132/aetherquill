@@ -677,6 +677,9 @@ fn main() {
                             if panel.toggle() {
                                 catalogue::draw_panel(&mut fb, &spell_catalogue, panel.page);
                                 let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                                // Every close path repaints the whole sidebar, which resets it.
+                                let (x, y, w, h) = chrome::draw_spells_button(&mut fb, true);
+                                let _ = client.update_partial(x, y, w, h);
                             } else {
                                 // As a dismiss: the result restores what the panel covered.
                                 repaint_and_recognize!(session.previous_ring.clone());
