@@ -14,3 +14,71 @@ P5 fresh judge >= 9/10 twice · P6 INSTALL-CHECKLIST.md complete, no hardware cl
 | 4 | 82% | eval hardening: 2 fresh never-tuned seeds × 10 redraws replayed stroke-by-stroke like the device (80/80) + 1 jittered redraw/spell in the default suite | ✅ 85 · 30 · 3 | ✅ 1,061,836 B | ✅ 4/4 | ✅ 400/400 + fresh 80/80 | pending round 2 | ✅ | ✅ kept |
 | 4 judges | 83% | P5 round 2 | | | | | A 9/10 · B 8/10 ❌ (both: lift by 400 ms timer; B: pick-replaces-page undisclosed) | | |
 | 5 | 83% | real finger-up via INPUT_TOUCH_RELEASE (timer kept as fallback); bin reuses lib modules (0 warnings); checklist discloses pick-replaces-page + timing blank | ✅ 85 · 30 · 3 | ✅ 1,063,828 B | ✅ 4/4 | ✅ 400/400 + fresh 80/80 | pending round 3 | ✅ | ✅ kept |
+
+# Improve log, 5-lane pass (2026-10-25, owner lifted the weekly-limit stop)
+
+Rows: P1 suites · P2 armv7 < 2 MB · P3 catalogue N/N Rust = JS, N >= 8 · P4 5 held-out seeds × 20 jittered redraws/spell, 100% ·
+P5 animation >= 2× frames at the same total time, no frame > 120 ms in effect_preview · P6 0 open bugs from the fuzz run, each fix tested ·
+P7 fresh judge (other model, medium) >= 9/10 twice · P8 INSTALL-CHECKLIST lists every HUMAN check.
+
+| Pass | Weekly | Change | P1 | P2 | P3 | P4 | P5 | P6 | P7 | P8 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 (baseline, HEAD f6360de) | 93% | — | ✅ 85 · 33 · 3 | ✅ 1,177,264 B | ❌ 4/4 (N < 8) | ✅ 400/400 + fresh 80/80 | ❌ 10 frames × 80 ms | — no fuzz | — | ❌ |
+| 1 (lanes A–E merged + lead syncs) | 93%+ | A: 20 eased frames × 40 ms, effects clipped to the canvas (sidebar-wipe bug, test first), dirty rect per frame · B: 12 sigil × sign spells, 4 canon from wiki pages opened this run · C: session.rs + 160k-action fuzz, 6 bugs each with a failing test first · D: chrome.rs, 132 px targets, status headline, catalogue paging · E: FEATURES.md · lead: render clip edge from chrome (156), catalogue re-centred off the wider sidebar, render_feedback refresh clamped | ✅ 85 · 56 · 3 | ✅ 1,539,072 B | ✅ 12/12 | ✅ 1200/1200 + fresh 240/240 | ✅ 20 × 40 ms = 800 ms, worst host frame 43.4 ms | ✅ 0 violations / 160,000 actions, 8 seeds | pending | ✅ rows 2.5, 3.7–3.9, 5.1b, 5.11–5.19, 6a, 6b |
+| 2 (judge fixes) | 93%+ | lag log: drop pending timestamps on resume / discarded stroke / hold-to-snap (no bogus p95 after them) · catalogue drawing-area test bound 114 → chrome::CANVAS_LEFT (156) · real-catalogue "past the last spell → None" hit test restored · render_feedback final refresh pad 90 → 120 (covers the settle labels) · FEATURES idea 1 rewritten (CLEAR case fixed by lane C) | ✅ device 56 | ✅ 1,538,952 B | ✅ | (unchanged code path) | (unchanged) | ✅ | pending round 2 | ✅ |
+
+### Raw outputs behind pass 1 (verbatim)
+
+P4, `cd device && cargo test --release --lib -- --ignored jittered --nocapture` (held-out seeds 5 × 20 = 100/spell; fresh 2 × 10 = 20/spell):
+
+```
+P4 fire-shoot: 100/100
+P4 water-orb: 100/100
+P4 converging-wind: 100/100
+P4 light-beam: 100/100
+P4 pyreball-seal: 100/100
+P4 watershot-seal: 100/100
+P4 skysoaring-seal: 100/100
+P4 converging-flame: 100/100
+P4 fresh fire-shoot: 20/20
+P4 fresh water-orb: 20/20
+P4 converging-water: 100/100
+P4 wind-pillar: 100/100
+P4 fresh converging-wind: 20/20
+P4 floating-light: 100/100
+P4 fresh light-beam: 20/20
+P4 fresh pyreball-seal: 20/20
+P4 converging-light: 100/100
+P4 fresh watershot-seal: 20/20
+P4 fresh skysoaring-seal: 20/20
+P4 fresh converging-flame: 20/20
+P4 fresh converging-water: 20/20
+P4 fresh wind-pillar: 20/20
+P4 fresh floating-light: 20/20
+P4 fresh converging-light: 20/20
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; finished in 87.17s
+```
+
+P5, `cd device && cargo run --release --example effect_preview` (host render time + scheduled interval; panel refresh time is NOT measured here):
+
+```
+P5 effect timing (host render; scheduled interval 40 ms)
+  r150 fire  frames 20 interval 40 ms render mean 0.13 ms max 0.23 ms worst frame 40.2 ms flush 540x540
+  r150 water frames 20 interval 40 ms render mean 0.30 ms max 0.33 ms worst frame 40.3 ms flush 540x540
+  r150 wind  frames 20 interval 40 ms render mean 0.60 ms max 0.78 ms worst frame 40.8 ms flush 540x540
+  r150 earth frames 20 interval 40 ms render mean 0.13 ms max 0.18 ms worst frame 40.2 ms flush 540x540
+  r150 light frames 20 interval 40 ms render mean 0.11 ms max 0.18 ms worst frame 40.2 ms flush 540x540
+  r519 fire  frames 20 interval 40 ms render mean 0.38 ms max 0.66 ms worst frame 40.7 ms flush 1186x1284
+  r519 water frames 20 interval 40 ms render mean 0.97 ms max 1.90 ms worst frame 41.9 ms flush 1186x1284
+  r519 wind  frames 20 interval 40 ms render mean 1.59 ms max 1.87 ms worst frame 41.9 ms flush 1186x1284
+  r519 earth frames 20 interval 40 ms render mean 0.33 ms max 0.59 ms worst frame 40.6 ms flush 1186x1284
+  r519 light frames 20 interval 40 ms render mean 0.31 ms max 0.59 ms worst frame 40.6 ms flush 1186x1284
+P5 ok: 20 frames (>= 20) x 40 ms = 800 ms total, no frame > 120 ms
+```
+
+P2, `ls -l device/target/armv7-unknown-linux-musleabihf/release/aetherquill` after `cargo build --release --target armv7-unknown-linux-musleabihf`: 1538952 bytes (pass 2).
+| 3 (judge round 2: A 8/10, B 8/10) | 93%+ | recognition results wait while the catalogue panel is open (a redraw/animation used to wipe the panel on screen while taps still hit-tested it) · render_feedback refresh = render::effect_dirty_rect (labels from the same settle_labels geometry, no hand-kept pad) · lag log: pen_ts no longer cleared on RELEASE (dropped stamps of a stroke queued behind a synthesized release); resume also drops the cut stroke's partial latencies · clear_seal_annulus documents its reliance on the canvas-clamped bbox. P6 wording: the 160,000-action fuzz covers session.rs operations only; main.rs sequencing (bin-only) is checked by review + INSTALL-CHECKLIST | ✅ device 56 | ✅ | ✅ | (unchanged) | (unchanged) | ✅ (session.rs scope) | pending round 3 | ✅ |
+| 4 (judge round 3: B 8/10; A cut off by the weekly limit) | 3% (reset) | resume and the unfocused-stroke discard close the catalogue panel (their repaint wiped it on screen while catalogue_open stayed true: an invisible panel kept catching taps) · a tap that dismisses the panel ignores the rest of that finger contact (it used to grab and drag the stroke under the finger) | ✅ device 56 | ✅ | ✅ | (unchanged) | (unchanged) | ✅ (session.rs scope) | pending round 4 | ✅ |
+| 5 (judge round 4: A 8/10, B 8/10) | 3% | catalogue panel state + tap rules moved into host-tested catalogue::Panel (toggle, tap -> Turned/Pick/Dismissed, close, allows_repaint), 4 new tests; main.rs only draws · closing the panel (dismiss tap or SPELLS) repaints AND re-recognizes, so the status line, halo and label it covered come back (was blank until the next stroke) · a pending drag commit waits while the panel is up (its repaint used to wipe the open panel) | ✅ device 60 | ✅ | ✅ | (unchanged) | (unchanged) | ✅ | pending round 5 | ✅ |
+| 6 (judge round 5: B 8/10) | 3% | the two repaints that skipped re-recognition (discarded unfocused stroke, too-short stray dot) now repaint + re-recognize, so the status line, halo and label come back; audited all 8 redraw_all sites, the other 6 are followed by a result | ✅ | ✅ | ✅ | (unchanged) | (unchanged) | ✅ | pending | ✅ |
+| 7 (judge round 5: A 8/10) | 3% | a catalogue pick drops a drag still waiting to commit (its stroke id pointed at the replaced page; ~400 ms later it reset the ring and repainted). Code loop stopped here: plateau at 8/10 for four rounds (8, 8, 8, 8); remaining findings are armv7-only glue or logged known gaps | ✅ | ✅ | ✅ | (unchanged) | (unchanged) | ✅ | ❌ plateau 8/10 | ✅ |

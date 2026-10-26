@@ -37,6 +37,9 @@ pub struct PenSample {
     pub edge: PenEdge,
     pub x: f64,
     pub y: f64,
+    /// Kernel timestamp of the report's SYN_REPORT, seconds. CLOCK_MONOTONIC
+    /// once main.rs sets EVIOCSCLOCKID on its fd (the lag log compares it).
+    pub t: f64,
 }
 
 pub struct PenDecoder {
@@ -81,7 +84,9 @@ impl PenDecoder {
                     self.was_touching = self.touching;
                     if let Some(edge) = edge {
                         let (x, y) = self.to_screen(self.raw_x, self.raw_y);
-                        out.push(PenSample { edge, x, y });
+                        let sec = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+                        let usec = u32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+                        out.push(PenSample { edge, x, y, t: sec as f64 + usec as f64 * 1e-6 });
                     }
                 }
                 _ => {}
@@ -224,6 +229,18 @@ mod tests {
         let edges: Vec<PenEdge> = out.iter().map(|s| s.edge).collect();
         assert_eq!(edges, [PenEdge::Down, PenEdge::Move, PenEdge::Up]);
         assert_eq!((out[0].x, out[0].y), d.to_screen(10000, 8000));
+    }
+
+    #[test]
+    fn sample_time_is_the_syn_reports_kernel_timestamp() {
+        let mut d = PenDecoder::new(DEFAULT_MAX_X, DEFAULT_MAX_Y);
+        let mut out = Vec::new();
+        let mut bytes = report(10000, 8000, Some(true));
+        let syn = bytes.len() - EVENT_SIZE;
+        bytes[syn..syn + 4].copy_from_slice(&1234u32.to_le_bytes());
+        bytes[syn + 4..syn + 8].copy_from_slice(&500_000u32.to_le_bytes());
+        d.feed(&bytes, &mut out);
+        assert_eq!(out[0].t, 1234.5);
     }
 
     #[test]

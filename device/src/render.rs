@@ -3,6 +3,7 @@
 //! effects can be rendered and eyeballed on any host (see examples/effect_preview).
 
 use crate::spell_view::{EffectParams, Overlay};
+use std::cell::Cell;
 
 pub const W: i32 = 1404;
 pub const H: i32 = 1872;
@@ -11,11 +12,59 @@ pub const WHITE: u16 = 0xFFFF;
 pub const BLACK: u16 = 0x0000;
 pub const GRAY: u16 = 0x8410; // mid-gray in RGB565
 
-/// Frames per activation animation (excludes the final settle frame). 10 x
-/// 80ms ~ 0.85s with the settle; was 6 (~0.5s) — lengthened on request.
-pub const EFFECT_FRAMES: i32 = 10;
+/// Frames per activation animation (excludes the final settle frame). 20 x
+/// 40ms = 0.8s, the same total as the old 10 x 80ms but twice the steps.
+pub const EFFECT_FRAMES: i32 = 20;
+/// Scheduled gap between frames (ms); `animate_activation` paces on it.
+pub const EFFECT_FRAME_MS: u64 = 40;
+/// Leading frames that only show the ignition band (2 x 40ms = the old 80ms).
+const IGNITION_FRAMES: i32 = 2;
+
+/// Smoothstep ease-in-out on 0..1.
+fn ease(t: f64) -> f64 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Eased motion progress of frame `f`: 0 during ignition, 1 on the last frame.
+fn progress(f: i32) -> f64 {
+    let moving = (f - IGNITION_FRAMES + 1).max(0) as f64;
+    ease(moving / (EFFECT_FRAMES - IGNITION_FRAMES) as f64)
+}
 /// How far past the seal radius the effect reaches.
 pub const EFFECT_REACH: i32 = 120;
+
+/// Left edge of the drawable canvas for effects: the sidebar plus its 2 px
+/// gray edge (chrome.rs). Effects must never paint over the sidebar.
+pub const CANVAS_LEFT: i32 = crate::chrome::CANVAS_LEFT;
+/// Top edge of the drawable canvas for effects: below the status strip.
+pub const CANVAS_TOP: i32 = crate::chrome::STATUS_H;
+
+thread_local! {
+    /// (x0, y0, x1, y1) box `Fb::set` is limited to; the whole screen by
+    /// default. Only `effect_frame`/`effect_settle` narrow it (via
+    /// `CanvasClip`) to their dirty rect, so effects can neither touch the
+    /// sidebar/status strip nor leave ink outside the region they clear and
+    /// flush, and main.rs's own drawing is unaffected. Thread-local so
+    /// parallel host tests don't see each other's clip.
+    static CLIP: Cell<(i32, i32, i32, i32)> = const { Cell::new((0, 0, W, H)) };
+}
+
+/// RAII: limits every `Fb` write on this thread to an (x, y, w, h) rect until
+/// dropped.
+struct CanvasClip;
+
+impl CanvasClip {
+    fn on((x, y, w, h): (i32, i32, i32, i32)) -> Self {
+        CLIP.set((x, y, x + w, y + h));
+        CanvasClip
+    }
+}
+
+impl Drop for CanvasClip {
+    fn drop(&mut self) {
+        CLIP.set((0, 0, W, H));
+    }
+}
 
 pub struct Fb<'a> {
     pub px: &'a mut [u16],
@@ -60,7 +109,8 @@ impl Fb<'_> {
     }
 
     pub fn set(&mut self, x: i32, y: i32, c: u16) {
-        if (0..W).contains(&x) && (0..H).contains(&y) {
+        let (x0, y0, x1, y1) = CLIP.get();
+        if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
             self.px[(y * W + x) as usize] = c;
         }
     }
@@ -141,20 +191,39 @@ impl Fb<'_> {
     }
 
     /// Whiten the effect annulus (bounding box minus the inner disk that holds
-    /// the seal + sigil), then restamp the bold seal ring.
+    /// the seal + sigil), then restamp the bold seal ring. Writes `px`
+    /// directly, bypassing CLIP: safe only because annulus_bbox is clamped to
+    /// the canvas (CANVAS_LEFT/CANVAS_TOP). Keep it that way.
     fn clear_seal_annulus(&mut self, cx: i32, cy: i32, radius: i32, pad: i32) {
         let inner = radius + 4;
-        let (x0, y0) = ((cx - pad).max(0), (cy - pad).max(0));
-        let (x1, y1) = ((cx + pad).min(W), (cy + pad).min(H));
+        let (x0, y0, x1, y1) = annulus_bbox(cx, cy, pad);
         for yy in y0..y1 {
-            for xx in x0..x1 {
-                let d2 = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy);
-                if d2 > inner * inner {
-                    self.set(xx, yy, WHITE);
-                }
-            }
+            // Inner disk spans [hole_l, hole_r) on this row (empty off the disk).
+            let dy = yy - cy;
+            let (hole_l, hole_r) = if dy.abs() <= inner {
+                let dx = (((inner * inner - dy * dy) as f64).sqrt()) as i32;
+                (cx - dx, cx + dx + 1)
+            } else {
+                (x1, x1)
+            };
+            let row = (yy * W) as usize;
+            self.px[row + x0 as usize..row + hole_l.clamp(x0, x1) as usize].fill(WHITE);
+            self.px[row + hole_r.clamp(x0, x1) as usize..row + x1 as usize].fill(WHITE);
         }
         self.circle(cx, cy, radius + 8, 4, BLACK);
+    }
+}
+
+/// Screen box (x0, y0, x1, y1; end exclusive) an effect around (cx,cy) with
+/// `pad` = radius + reach clears and draws in, clamped to the screen and to
+/// the canvas (never the sidebar/status strip). Empty (x0 >= x1) if off-canvas.
+fn annulus_bbox(cx: i32, cy: i32, pad: i32) -> (i32, i32, i32, i32) {
+    let (x0, y0) = ((cx - pad).max(CANVAS_LEFT), (cy - pad).max(CANVAS_TOP));
+    let (x1, y1) = ((cx + pad).min(W), (cy + pad).min(H));
+    if x0 >= x1 || y0 >= y1 {
+        (x0, y0, x0, y0)
+    } else {
+        (x0, y0, x1, y1)
     }
 }
 
@@ -170,7 +239,7 @@ pub fn noise(seed: u32) -> f64 {
 ///
 /// Drawn for 1-bit fast-waveform e-ink: solid filled shapes and thick lines
 /// (thin 1-2 px lines barely register in the fast mode and leave ghosts),
-/// frame 0 an ignition band, motion from shapes growing and travelling.
+/// frames 0..1 an ignition band, then eased motion from shapes growing and travelling.
 /// Element character follows the upstream particle renderer: fire = rising
 /// top-weighted flame tongues + embers, water = expanding rings + falling
 /// droplets, wind = unfurling spiral ribbons + gusts, earth = cracks + rising
@@ -180,12 +249,15 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
     let tau = std::f64::consts::TAU;
     let reach = params.reach as f64;
     let w = params.weight;
-    let p = f as f64 / (EFFECT_FRAMES - 1) as f64; // progress 0..1
+    let p = progress(f); // eased progress 0..1
+    let fk = (f / 2) as u32; // flicker steps every 2 frames (the old 80ms), not every 40ms
+    let Some(rect) = effect_dirty_rect(cx, cy, radius, element, params, false) else { return };
+    let _clip = CanvasClip::on(rect);
     fb.clear_seal_annulus(cx, cy, radius, radius + params.reach);
     let r0 = (radius + 14) as f64;
     let at = |a: f64, r: f64| (cx + (a.cos() * r) as i32, cy + (a.sin() * r) as i32);
 
-    if f == 0 {
+    if f < IGNITION_FRAMES {
         // Ignition: a solid band hugging the seal.
         fb.circle(cx, cy, radius + 10, 22, BLACK);
         return;
@@ -196,10 +268,10 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
             for i in 0..16u32 {
                 let a = tau * i as f64 / 16.0 + 0.1;
                 let up = (-a.sin()).max(0.0);
-                let flick = noise(i * 7 + f as u32 * 31);
+                let flick = noise(i * 7 + fk * 31);
                 let h = (reach * (0.3 + 0.55 * up) * (0.45 + 0.55 * p) * (0.8 + 0.4 * flick)).min(reach - 22.0);
                 let half = 0.10 + 0.03 * flick;
-                let sway = (noise(i * 13 + f as u32 * 17) - 0.5) * 0.22;
+                let sway = (noise(i * 13 + fk * 17) - 0.5) * 0.22;
                 let tongue = [at(a - half, r0), at(a - half * 0.75 + sway * 0.5, r0 + h * 0.45), at(a + sway, r0 + h), at(a + half * 0.75 + sway * 0.5, r0 + h * 0.45), at(a + half, r0)];
                 fb.fill_polygon(&tongue, BLACK);
                 if h > 36.0 {
@@ -216,7 +288,7 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
         "water" => {
             for k in 0..3 {
                 let u = (p * 1.3 + k as f64 / 3.0) % 1.0;
-                fb.circle(cx, cy, (r0 + u * reach * 0.85) as i32, (9.0 * (1.0 - u)) as i32 + 2 + w, BLACK);
+                fb.circle(cx, cy, (r0 + u * reach * 0.85) as i32, (9.0 * (1.0 - u)) as i32 + 3 + w, BLACK);
             }
             for i in 0..10u32 {
                 let a = tau * i as f64 / 10.0 + 0.3;
@@ -282,13 +354,12 @@ pub fn effect_frame(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, f
             }
         }
     }
-    draw_overlay(fb, cx, cy, radius, f, params);
+    draw_overlay(fb, cx, cy, radius, p, params);
 }
 
 /// Sign manifestation drawn over the element effect, inside the same annulus
 /// (never inside the seal, so the sigil survives). Grows over the frames.
-fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &EffectParams) {
-    let grow = (f + 1) as f64 / EFFECT_FRAMES as f64;
+fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, grow: f64, params: &EffectParams) {
     let reach = params.reach as f64;
     let r0 = (radius + 14) as f64;
     let w = params.weight;
@@ -356,14 +427,140 @@ fn draw_overlay(fb: &mut Fb, cx: i32, cy: i32, radius: i32, f: i32, params: &Eff
     }
 }
 
+/// Settle-frame text as (x, y, text, scale): the element name, then the sign
+/// manifestation under it when there is one. Both centred on `cx`.
+fn settle_labels<'a>(cx: i32, cy: i32, radius: i32, element: &'a str, params: &'a EffectParams) -> impl Iterator<Item = (i32, i32, &'a str, i32)> {
+    let name = Some((element, 6, cy + radius + 40));
+    let label = (params.manifestation != "aura").then_some((params.manifestation.as_str(), 3, cy + radius + 96));
+    name.into_iter().chain(label).map(move |(s, scale, y)| (cx - s.len() as i32 * scale * 8 / 2, y, s, scale))
+}
+
 /// Final settle frame: clear the effect, leave the bold seal + element name
 /// (and the sign manifestation under it, when there is one).
 pub fn effect_settle(fb: &mut Fb, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
-    let pad = radius + params.reach;
-    fb.clear_seal_annulus(cx, cy, radius, pad);
-    fb.text(cx - element.len() as i32 * 3 * 8 / 2, cy + radius + 40, element, 6, BLACK);
-    let label = &params.manifestation;
-    if label != "aura" {
-        fb.text(cx - label.len() as i32 * 3 * 8 / 2, cy + radius + 96, label, 3, BLACK);
+    let Some(rect) = effect_dirty_rect(cx, cy, radius, element, params, true) else { return };
+    let _clip = CanvasClip::on(rect);
+    fb.clear_seal_annulus(cx, cy, radius, radius + params.reach);
+    for (x, y, s, scale) in settle_labels(cx, cy, radius, element, params) {
+        fb.text(x, y, s, scale, BLACK);
+    }
+}
+
+/// Screen rect `(x, y, w, h)` for `update_partial` covering everything one
+/// `effect_frame` (or, with `settle`, `effect_settle` incl. its labels) can
+/// change: the annulus box clamped to the screen and the canvas, so it never
+/// reaches the sidebar/status strip or past the screen edge. None if nothing
+/// of it is on the canvas.
+pub fn effect_dirty_rect(cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams, settle: bool) -> Option<(i32, i32, i32, i32)> {
+    let (mut x0, y0, mut x1, mut y1) = annulus_bbox(cx, cy, radius + params.reach);
+    if x0 >= x1 {
+        return None;
+    }
+    if settle {
+        for (x, y, s, scale) in settle_labels(cx, cy, radius, element, params) {
+            x0 = x0.min(x.max(CANVAS_LEFT));
+            x1 = x1.max((x + s.len() as i32 * scale * 8).min(W));
+            y1 = y1.max((y + 8 * scale).min(H));
+        }
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SENTINEL: u16 = 0x1234;
+
+    /// Sidebar (SIDEBAR_W 154 + 2px edge) and status strip (STATUS_H 120) from
+    /// main.rs; literal on purpose so the contract is stated independently.
+    fn protected(x: i32, y: i32) -> bool {
+        x < 156 || y < 120
+    }
+
+    #[test]
+    fn canvas_consts_match_main_layout() {
+        assert_eq!((CANVAS_LEFT, CANVAS_TOP), (154 + 2, 120));
+    }
+
+    fn params(overlay: Overlay) -> EffectParams {
+        EffectParams { reach: 123, weight: 1, strength: 0.65, spread: 0.4, manifestation: "column".into(), overlay }
+    }
+
+    #[test]
+    fn big_ring_effects_leave_sidebar_and_status_strip_alone() {
+        let overlays = [Overlay::Aura, Overlay::Column { dir: (0.0, -1.0) }, Overlay::Levitation { lift: 0.26 }, Overlay::Convergence { point: (0.0, 0.34), rigidity: 0.61 }];
+        // (700,500) pushes the annulus over the status strip, (700,900) over the sidebar.
+        let mut px = vec![WHITE; (W * H) as usize];
+        for (n, (cx, cy)) in [(700, 900), (700, 500), (300, 300)].into_iter().enumerate() {
+            for (m, el) in ["fire", "water", "wind", "earth", "light"].into_iter().enumerate() {
+                px.fill(WHITE);
+                for y in 0..H {
+                    for x in 0..W {
+                        if protected(x, y) {
+                            px[(y * W + x) as usize] = SENTINEL;
+                        }
+                    }
+                }
+                let mut fb = Fb { px: &mut px };
+                let p = params(overlays[(n + m) % overlays.len()].clone());
+                // Debug builds are slow: first, middle and last frame + settle.
+                for f in [0, EFFECT_FRAMES / 2, EFFECT_FRAMES - 1] {
+                    effect_frame(&mut fb, cx, cy, 519, el, f, &p);
+                }
+                effect_settle(&mut fb, cx, cy, 519, el, &p);
+                let hit = (0..H).flat_map(|y| px[(y * W) as usize..((y + 1) * W) as usize].iter().enumerate().map(move |(x, &v)| (x as i32, y, v))).filter(|&(x, y, v)| protected(x, y) && v != SENTINEL).count();
+                assert_eq!(hit, 0, "{el} at ({cx},{cy}): {hit} sidebar/status pixels overwritten");
+            }
+        }
+    }
+
+    /// a and b agree everywhere outside the (x, y, w, h) rect.
+    fn assert_same_outside(a: &[u16], b: &[u16], (rx, ry, rw, rh): (i32, i32, i32, i32), what: &str) {
+        for y in 0..H {
+            let row = (y * W) as usize..((y + 1) * W) as usize;
+            if (ry..ry + rh).contains(&y) {
+                let (l, r) = (row.start + rx as usize, row.start + (rx + rw) as usize);
+                assert!(a[row.start..l] == b[row.start..l] && a[r..row.end] == b[r..row.end], "{what}: pixels changed beside the dirty rect on row {y}");
+            } else {
+                assert!(a[row.clone()] == b[row], "{what}: pixels changed above/below the dirty rect on row {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn dirty_rect_covers_every_changed_pixel_and_stays_on_canvas() {
+        let p = params(Overlay::Column { dir: (0.0, -1.0) });
+        // Small ring, big ring over the sidebar, and a ring near the bottom-right corner.
+        for (cx, cy, radius) in [(700, 900, 150), (700, 900, 519), (1300, 1800, 150)] {
+            for el in ["fire", "water", "wind", "earth", "light"] {
+                let mut a = vec![WHITE; (W * H) as usize];
+                let mut b = a.clone();
+                for f in [2, EFFECT_FRAMES / 2, EFFECT_FRAMES - 1] {
+                    effect_frame(&mut Fb { px: &mut a }, cx, cy, radius, el, f - 1, &p);
+                    effect_frame(&mut Fb { px: &mut b }, cx, cy, radius, el, f, &p);
+                    let rect = effect_dirty_rect(cx, cy, radius, el, &p, false).unwrap();
+                    assert!(rect.0 >= CANVAS_LEFT && rect.1 >= CANVAS_TOP && rect.0 + rect.2 <= W && rect.1 + rect.3 <= H, "{el} {rect:?} leaves the canvas");
+                    assert_same_outside(&a, &b, rect, &format!("{el} r{radius} frame {f}"));
+                }
+                effect_settle(&mut Fb { px: &mut b }, cx, cy, radius, el, &p);
+                let rect = effect_dirty_rect(cx, cy, radius, el, &p, true).unwrap();
+                assert!(rect.0 >= CANVAS_LEFT && rect.1 >= CANVAS_TOP && rect.0 + rect.2 <= W && rect.1 + rect.3 <= H, "{el} settle {rect:?} leaves the canvas");
+                assert_same_outside(&a, &b, rect, &format!("{el} r{radius} settle"));
+            }
+        }
+        // Off-canvas seal: nothing to flush.
+        assert_eq!(effect_dirty_rect(-400, 900, 150, "fire", &p, false), None);
+    }
+
+    #[test]
+    fn eased_progress_is_monotone_and_hits_both_ends() {
+        let ps: Vec<f64> = (0..EFFECT_FRAMES).map(progress).collect();
+        assert_eq!((ps[0], ps[1]), (0.0, 0.0), "ignition frames");
+        assert!((ps[EFFECT_FRAMES as usize - 1] - 1.0).abs() < 1e-12);
+        assert!(ps.windows(2).all(|w| w[1] >= w[0]));
+        // ease-in-out: the middle steps are bigger than the end steps
+        let d = |i: usize| ps[i + 1] - ps[i];
+        assert!(d(EFFECT_FRAMES as usize / 2) > d(2) && d(EFFECT_FRAMES as usize / 2) > d(EFFECT_FRAMES as usize - 2));
     }
 }

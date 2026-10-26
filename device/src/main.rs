@@ -10,14 +10,16 @@
 //! Tap UNDO / CLEAR boxes in the top chrome strip. Close the window from
 //! AppLoad to exit (server disconnect ends the event loop).
 
-use std::sync::mpsc;
+use std::collections::VecDeque;
+use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use recognizer::config::{COMPILER, EFFECT_SIZE, INPUT, LAYERS, RECOGNITION, RING};
 use recognizer::dictionaries::load_dictionary;
 use recognizer::symbol_recognizer::Dictionary;
 use recognizer::drawing_classifier::classify_drawing;
-use recognizer::geometry::Point;
 use recognizer::ring_detector::Ring;
 use recognizer::spell_builder::{compile_spell, SpellIr};
 use recognizer::stroke_cleaner::RawStroke;
@@ -25,11 +27,13 @@ use recognizer::stroke_cleaner::RawStroke;
 mod grimoire;
 mod qtfb;
 
-use device::{catalogue, pen, render, resume, shapes, spell_view};
+use device::session::{to_raw_strokes, ScreenStroke, Session};
+use device::{catalogue, chrome, lag, pen, render, resume, shapes, spell_view};
+use chrome::{slot_at, SIDEBAR_W, STATUS_H};
 
 use render::{effect_frame, effect_settle, Fb, BLACK, EFFECT_FRAMES, GRAY, H, W, WHITE};
 use shapes::{path_length, snap_stroke};
-use spell_view::{status_lines, EffectParams};
+use spell_view::EffectParams;
 
 /// Opens the Wacom digitizer read-only and non-blocking (no EVIOCGRAB:
 /// xochitl keeps receiving the pen). None -> fall back to AppLoad's pen events.
@@ -49,7 +53,12 @@ fn open_digitizer() -> Option<(libc::c_int, pen::PenDecoder)> {
         if rc == 0 && info[2] > 0 { info[2] } else { fallback }
     };
     let (max_x, max_y) = (abs_max(0, pen::DEFAULT_MAX_X), abs_max(1, pen::DEFAULT_MAX_Y));
-    eprintln!("digitizer: {} max_x={max_x} max_y={max_y}", dev.trim_end_matches('\0'));
+    // EVIOCSCLOCKID = _IOW('E', 0xa0, int): this fd's event timestamps on
+    // CLOCK_MONOTONIC (per client; xochitl's own fd is untouched), so the lag
+    // log can compare them with clock_gettime.
+    let clock: libc::c_int = libc::CLOCK_MONOTONIC;
+    let rc = unsafe { libc::ioctl(fd, 0x4004_45a0u32 as _, &clock) };
+    eprintln!("digitizer: {} max_x={max_x} max_y={max_y} monotonic_ts={}", dev.trim_end_matches('\0'), rc == 0);
     Some((fd, pen::PenDecoder::new(max_x, max_y)))
 }
 
@@ -64,6 +73,13 @@ fn read_digitizer(fd: libc::c_int, decoder: &mut pen::PenDecoder, out: &mut Vec<
         if (n as usize) < buf.len() {
             return;
         }
+    }
+}
+
+/// Appends to lag::LOG_PATH only if it already exists (touch to enable).
+fn lag_log(line: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(lag::LOG_PATH) {
+        let _ = writeln!(f, "{line}");
     }
 }
 
@@ -93,130 +109,17 @@ const INK_W: i32 = 3;
 /// qtfb socket; 40ms (25Hz) was the first safe value, 16ms (~60Hz) the current.
 const INK_FLUSH_MS: u128 = 16;
 
-struct ScreenStroke {
-    id: String,
-    points: Vec<(f64, f64)>,
-}
-
-fn to_raw_strokes(strokes: &[ScreenStroke]) -> Vec<RawStroke> {
-    strokes
-        .iter()
-        .map(|s| RawStroke {
-            id: s.id.clone(),
-            points: s.points.iter().map(|&(x, y)| Point { x: x * CANVAS_SCALE, y: y * CANVAS_SCALE }).collect(),
-        })
-        .collect()
-}
-
-// Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear.
-const SIDEBAR_W: i32 = 110;
-const STATUS_H: i32 = 64;
-const ICON_X: i32 = 13;
-const ICON_W: i32 = 84;
-const ICON_H: i32 = 80;
-const ICON_GAP: i32 = 12;
-
-fn icon_y(slot: i32) -> i32 {
-    15 + slot * (ICON_H + ICON_GAP)
-}
-
-/// Which toolbar slot a sidebar tap lands in (None = gap/below toolbar).
-fn icon_slot(y: i32) -> Option<i32> {
-    let rel = y - 15;
-    if rel < 0 {
-        return None;
-    }
-    let slot = rel / (ICON_H + ICON_GAP);
-    if slot <= 5 && rel % (ICON_H + ICON_GAP) < ICON_H {
-        Some(slot)
-    } else {
-        None
-    }
-}
-
-/// Icon box; active tools invert (black fill, white glyph). Returns glyph color.
-fn icon_frame(fb: &mut Fb, slot: i32, active: bool) -> u16 {
-    let y = icon_y(slot);
-    if active {
-        fb.fill_rect(ICON_X, y, ICON_W, ICON_H, BLACK);
-        WHITE
-    } else {
-        fb.rect_outline(ICON_X, y, ICON_W, ICON_H, 3, BLACK);
-        BLACK
-    }
-}
-
-/// Curved undo/redo arrow: three-quarter arc + arrowhead. `flip` mirrors it.
-fn draw_arrow_icon(fb: &mut Fb, slot: i32, flip: bool) {
-    let fg = icon_frame(fb, slot, false);
-    let y = icon_y(slot);
-    let (cx, cy, r) = (ICON_X + ICON_W / 2, y + ICON_H / 2 + 4, 18);
-    let (a0, a1) = if flip {
-        (-0.75 * std::f64::consts::PI, 0.9 * std::f64::consts::PI)
-    } else {
-        (-0.25 * std::f64::consts::PI, -1.9 * std::f64::consts::PI)
-    };
-    fb.arc(cx, cy, r, a0, a1, 3, fg);
-    let tip = a1;
-    let (tx, ty) = (cx + (tip.cos() * r as f64) as i32, cy + (tip.sin() * r as f64) as i32);
-    let side = if flip { -1.0 } else { 1.0 };
-    let tangent = tip + side * std::f64::consts::FRAC_PI_2;
-    for spread in [-0.5, 0.5] {
-        let a = tangent + spread;
-        fb.line(tx, ty, tx + (a.cos() * 12.0) as i32, ty + (a.sin() * 12.0) as i32, 3, fg);
-    }
-}
-
-fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
-    fb.fill_rect(0, 0, SIDEBAR_W, H, WHITE);
-    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, GRAY);
-
-    // Slot 0: pen - nib pointing down-left.
-    let fg = icon_frame(fb, 0, !erase_mode);
-    let y = icon_y(0);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 56, y + 26, 6, fg);
-    fb.line(ICON_X + 30, y + 52, ICON_X + 22, y + 60, 2, fg);
-
-    // Slot 1: eraser - tilted block with a wipe line under it.
-    let fg = icon_frame(fb, 1, erase_mode);
-    let y = icon_y(1);
-    fb.line(ICON_X + 26, y + 44, ICON_X + 44, y + 26, 14, fg);
-    fb.line(ICON_X + 22, y + 60, ICON_X + 60, y + 60, 2, fg);
-
-    // Slots 2-3: undo / redo arrows.
-    draw_arrow_icon(fb, 2, false);
-    draw_arrow_icon(fb, 3, true);
-
-    // Slot 4: clear - X.
-    let fg = icon_frame(fb, 4, false);
-    let y = icon_y(4);
-    fb.line(ICON_X + 26, y + 24, ICON_X + 58, y + 56, 3, fg);
-    fb.line(ICON_X + 58, y + 24, ICON_X + 26, y + 56, 3, fg);
-
-    // Slot 5: Spell Catalogue - a page of listed spells.
-    let fg = icon_frame(fb, 5, false);
-    let y = icon_y(5);
-    fb.rect_outline(ICON_X + 24, y + 16, 36, 48, 3, fg);
-    for row in 0..3 {
-        fb.fill_rect(ICON_X + 31, y + 28 + row * 11, 22, 3, fg);
-    }
-}
 
 fn draw_status(fb: &mut Fb, client: &QtfbClient, line1: &str, line2: &str) {
-    let left = SIDEBAR_W + 12;
-    let width = W - left - 12;
-    fb.fill_rect(left, 0, width, STATUS_H - 4, WHITE);
-    fb.text(left + 8, 10, line1, 3, BLACK);
-    fb.text(left + 8, 42, line2, 2, GRAY);
-    let _ = client.update_partial(left, 0, width, STATUS_H);
+    let (x, y, w, h) = chrome::draw_status(fb, line1, line2);
+    let _ = client.update_partial(x, y, w, h);
 }
 
 /// Full redraw. When a complete ring is known, its member strokes render as
 /// one perfect circle (display-only snap — recognition still sees raw points).
 fn redraw_all(fb: &mut Fb, client: &QtfbClient, strokes: &[ScreenStroke], ring: Option<&Ring>, erase_mode: bool) {
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(fb, erase_mode);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(fb, erase_mode);
     let ring = ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)));
     let ring_ids: &[String] = ring.map_or(&[], |r| &r.stroke_ids);
     for stroke in strokes {
@@ -247,16 +150,11 @@ struct SpellOutcome {
 fn recognize(dictionary: &Dictionary, raw: &[RawStroke], previous_ring: Option<&Ring>) -> SpellOutcome {
     let t0 = Instant::now();
     let result = classify_drawing(raw, previous_ring, dictionary, env!("CARGO_PKG_VERSION"), &INPUT, &RING, &LAYERS, &RECOGNITION);
-    eprintln!("recognize: {} strokes in {}ms", raw.len(), t0.elapsed().as_millis());
     let spell = compile_spell(&result.glyph_ast, &COMPILER, &EFFECT_SIZE);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("recognize: {} strokes in {ms:.0}ms", raw.len());
+    lag_log(&format!("{{\"recognize_ms\":{ms:.1},\"strokes\":{}}}", raw.len()));
     SpellOutcome { ring: if result.ring.found { Some(result.ring) } else { None }, spell }
-}
-
-/// Complete-ring stroke ids that redraw_all would snap right now.
-fn snapped_ids(ring: Option<&Ring>, strokes: &[ScreenStroke]) -> Vec<String> {
-    ring.filter(|r| r.complete && r.stroke_ids.iter().all(|id| strokes.iter().any(|s| &s.id == id)))
-        .map(|r| r.stroke_ids.clone())
-        .unwrap_or_default()
 }
 
 type RecognitionJob = (u64, Vec<RawStroke>, Option<Ring>);
@@ -270,12 +168,16 @@ struct Recognizer {
     jobs: mpsc::Sender<RecognitionJob>,
     results: mpsc::Receiver<(u64, SpellOutcome)>,
     generation: u64,
+    /// True while the worker classifies (the lag log tags samples flushed then).
+    busy: Arc<AtomicBool>,
 }
 
 impl Recognizer {
     fn spawn() -> Self {
         let (jobs, job_rx) = mpsc::channel::<RecognitionJob>();
         let (result_tx, results) = mpsc::channel();
+        let busy = Arc::new(AtomicBool::new(false));
+        let worker_busy = busy.clone();
         std::thread::spawn(move || {
             let dictionary = load_dictionary();
             while let Ok(mut job) = job_rx.recv() {
@@ -283,12 +185,15 @@ impl Recognizer {
                     job = newer;
                 }
                 let (generation, raw, previous_ring) = job;
-                if result_tx.send((generation, recognize(&dictionary, &raw, previous_ring.as_ref()))).is_err() {
+                worker_busy.store(true, Ordering::Relaxed);
+                let outcome = recognize(&dictionary, &raw, previous_ring.as_ref());
+                worker_busy.store(false, Ordering::Relaxed);
+                if result_tx.send((generation, outcome)).is_err() {
                     return;
                 }
             }
         });
-        Recognizer { jobs, results, generation: 0 }
+        Recognizer { jobs, results, generation: 0, busy }
     }
 
     fn request(&mut self, strokes: &[ScreenStroke], previous_ring: Option<Ring>) {
@@ -315,17 +220,24 @@ impl Recognizer {
 /// is untouched and the effect genuinely moves. Modifying signs shape it via
 /// `params` (reach/weight/overlay from the compiled SpellIr — spell_view.rs).
 fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius: i32, element: &str, params: &EffectParams) {
-    let pad = radius + params.reach;
-    let flush = |client: &QtfbClient, ms: u64| {
-        let _ = client.update_partial((cx - pad).max(0), (cy - pad).max(0), pad * 2, pad * 2);
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+    // Dirty rect only (clamped to screen + canvas by render). Pace on absolute
+    // deadlines so the total stays EFFECT_FRAMES x EFFECT_FRAME_MS however long
+    // a frame takes to draw. The refresh mode is NOT touched here (rm-appload
+    // sleeps 1 s per mode change).
+    let flush = |client: &QtfbClient, settle: bool, wait_until: Instant| {
+        if let Some((x, y, w, h)) = render::effect_dirty_rect(cx, cy, radius, element, params, settle) {
+            let _ = client.update_partial(x, y, w, h);
+        }
+        std::thread::sleep(wait_until.saturating_duration_since(Instant::now()));
     };
+    let start = Instant::now();
+    let tick = std::time::Duration::from_millis(render::EFFECT_FRAME_MS);
     for f in 0..EFFECT_FRAMES {
         effect_frame(fb, cx, cy, radius, element, f, params);
-        flush(client, 80);
+        flush(client, false, start + tick * (f as u32 + 1));
     }
     effect_settle(fb, cx, cy, radius, element, params);
-    flush(client, 60);
+    flush(client, true, Instant::now() + std::time::Duration::from_millis(60));
     // The fast waveform leaves every frame's ghost behind (seen on the RM2
     // after a Fire Shoot: flame tongues and pillar outlines on a clean
     // buffer); one full-quality refresh wipes them.
@@ -334,7 +246,7 @@ fn animate_activation(fb: &mut Fb, client: &QtfbClient, cx: i32, cy: i32, radius
 
 fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, last_activation: &mut String) {
     let spell = &outcome.spell;
-    let (line1, line2) = status_lines(spell);
+    let (line1, line2) = chrome::spell_status(spell);
     draw_status(fb, client, &line1, &line2);
 
     let Some(ring) = &outcome.ring else { return };
@@ -354,14 +266,12 @@ fn render_feedback(fb: &mut Fb, client: &QtfbClient, outcome: &SpellOutcome, las
         }
     }
 
-    // Covers the settle frame's labels and the widest reach a sign can give.
-    let pad = 90.max(params.reach);
-    let _ = client.update_partial(
-        (cx - radius - pad).max(0),
-        (cy - radius - pad).max(0),
-        (radius + pad) * 2,
-        (radius + pad) * 2,
-    );
+    // Halo, effect annulus and (for an element) the settle labels, from the
+    // same geometry render.rs draws them with; clamped to the canvas/screen.
+    let element = spell.element.as_deref().unwrap_or("");
+    if let Some((x, y, w, h)) = render::effect_dirty_rect(cx, cy, radius, element, &params, spell.element.is_some()) {
+        let _ = client.update_partial(x, y, w, h);
+    }
 }
 
 fn main() {
@@ -389,18 +299,14 @@ fn main() {
     let mut fb = Fb { px };
 
     fb.fill_rect(0, 0, W, H, WHITE);
-    draw_sidebar(&mut fb, false);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    chrome::draw_chrome(&mut fb, false);
     let _ = client.update_all();
     draw_status(&mut fb, &client, "Draw a spell ring to begin", "");
 
-    let mut strokes: Vec<ScreenStroke> = Vec::new();
-    let mut redo: Vec<ScreenStroke> = Vec::new();
+    // The page (session.rs): strokes, redo stack, last ring, snapped-ring ids.
+    let mut session = Session::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
     let mut pen_down = false;
-    let mut next_id: u64 = 1;
-    let mut previous_ring: Option<Ring> = None;
-    let mut last_activation = String::new();
     // Coalesced refresh: ink lands in shm per-segment, but e-ink update
     // requests flush at most every INK_FLUSH_MS — per-segment update_partial floods
     // the qtfb socket, lags the panel, and drops input events.
@@ -414,13 +320,11 @@ fn main() {
     // Distinguishes "pen still, events trickling" (hold-to-snap) from "pen
     // gone, no events at all" (silence commit).
     let mut last_pen_event = Instant::now();
-    // Auto ring snap: redraw once per newly completed ring.
-    let mut snapped_ring_ids: Vec<String> = Vec::new();
     // ERASE toggle (chrome button) — pen deletes strokes instead of inking.
     let mut erase_mode = false;
     let mut erased_any = false;
-    // Touch-drag stroke moving: (stroke index, touch dev_id, last x, last y).
-    let mut moving: Option<(usize, i32, f64, f64)> = None;
+    // Touch-drag stroke moving: (stroke id, touch dev_id, last x, last y).
+    let mut moving: Option<(String, i32, f64, f64)> = None;
     let mut last_touch = Instant::now();
     let mut move_redraw = Instant::now();
     // Touch arrives as a stream of PRESS events per contact — debounce chrome
@@ -437,10 +341,18 @@ fn main() {
     let mut last_digitizer_down: Option<((f64, f64), Instant)> = None;
     let mut digitizer_stroke_live = false;
     let started = Instant::now();
+    // Lag log (lag.rs): kernel time of each digitizer PRESS/UPDATE queued into
+    // `events` (same order), of each inked sample awaiting a flush, and the
+    // current stroke's latencies.
+    let mut pen_ts: VecDeque<f64> = VecDeque::new();
+    let mut ink_pending: Vec<f64> = Vec::new();
+    let mut stroke_lat: Vec<f64> = Vec::new();
+    let mut stroke_busy = 0usize;
+    let mut lag_stroke = 0u64;
 
     // Spell Catalogue (catalogue.rs): panel open over the canvas?
     let spell_catalogue = catalogue::load();
-    let mut catalogue_open = false;
+    let mut panel = catalogue::Panel::default();
     // After a catalogue pick, the same finger's queued touch events must not
     // drag the freshly inked strokes: ignore canvas touch until it lifts.
     let mut touch_until_lift_ignored = false;
@@ -450,10 +362,8 @@ fn main() {
     // this same path.
     macro_rules! commit_stroke {
         ($points:expr) => {{
-            strokes.push(ScreenStroke { id: format!("s{next_id}"), points: $points });
-            next_id += 1;
-            redo.clear();
-            recognizer.request(&strokes, previous_ring.clone());
+            session.commit($points);
+            recognizer.request(&session.strokes, session.previous_ring.clone());
         }};
     }
 
@@ -462,13 +372,10 @@ fn main() {
     macro_rules! apply_outcome {
         ($outcome:expr) => {{
             let outcome = $outcome;
-            previous_ring = outcome.ring.clone();
-            let ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
-            if ring_ids != snapped_ring_ids {
-                snapped_ring_ids = ring_ids;
-                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            if session.apply_ring(outcome.ring.clone()) {
+                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
             }
-            render_feedback(&mut fb, &client, &outcome, &mut last_activation);
+            render_feedback(&mut fb, &client, &outcome, &mut session.last_activation);
         }};
     }
 
@@ -476,9 +383,9 @@ fn main() {
     // resume): repaint now, recognize in the background.
     macro_rules! repaint_and_recognize {
         ($previous_ring:expr) => {{
-            snapped_ring_ids = snapped_ids(previous_ring.as_ref(), &strokes);
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-            recognizer.request(&strokes, $previous_ring);
+            session.resnap();
+            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
+            recognizer.request(&session.strokes, $previous_ring);
         }};
     }
 
@@ -496,14 +403,18 @@ fn main() {
         unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
 
         if resume.observe(clock_s(libc::CLOCK_BOOTTIME), clock_s(libc::CLOCK_MONOTONIC)) {
-            eprintln!("resume detected — redrawing from {} strokes", strokes.len());
+            eprintln!("resume detected — redrawing from {} strokes", session.strokes.len());
             // A stroke cut off by the nap is unreliable: drop it.
             pen_down = false;
             current.clear();
             dirty_rect = None;
+            ink_pending.clear();
+            stroke_lat.clear();
+            stroke_busy = 0;
             moving = None;
+            panel.close(); // the repaint below wipes it
             // The result restores the status line; same signature, so no replay.
-            repaint_and_recognize!(previous_ring.clone());
+            repaint_and_recognize!(session.previous_ring.clone());
         }
 
         let mut events = match client.drain_events() {
@@ -548,9 +459,13 @@ fn main() {
                             digitizer_stroke_live = (0.0..W as f64).contains(&x) && (0.0..H as f64).contains(&y);
                             if digitizer_stroke_live {
                                 events.push(pen_event(qtfb::INPUT_PEN_PRESS, x, y));
+                                pen_ts.push_back(s.t);
                             }
                         }
-                        pen::PenEdge::Move if digitizer_stroke_live => events.push(pen_event(qtfb::INPUT_PEN_UPDATE, x, y)),
+                        pen::PenEdge::Move if digitizer_stroke_live => {
+                            events.push(pen_event(qtfb::INPUT_PEN_UPDATE, x, y));
+                            pen_ts.push_back(s.t);
+                        }
                         pen::PenEdge::Up if digitizer_stroke_live => {
                             digitizer_stroke_live = false;
                             if gate.on_up(now) == Some(pen::GateAction::Commit) {
@@ -570,26 +485,28 @@ fn main() {
             pen_down = false;
             current.clear();
             dirty_rect = None;
-            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+            ink_pending.clear();
+            stroke_lat.clear();
+            stroke_busy = 0;
+            panel.close(); // the repaint below wipes it
+            // redraw_all blanks the status strip; the result restores it, the halo and the label (same signature, no replay).
+            repaint_and_recognize!(session.previous_ring.clone());
         }
 
         for event in events {
             match event.input_type {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
+                    let ts = pen_ts.pop_front();
                     let (x, y) = (event.x as f64, event.y as f64);
                     last_pen_event = Instant::now();
-                    if catalogue_open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
+                    if panel.open || x < (SIDEBAR_W + 4) as f64 || y < STATUS_H as f64 {
                         continue;
                     }
                     if erase_mode {
                         // Pen is an eraser: delete any stroke it touches.
-                        let hit = strokes.iter().position(|s| {
-                            s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 20.0)
-                        });
-                        if let Some(idx) = hit {
-                            redo.push(strokes.remove(idx));
+                        if session.erase_at(x, y) {
                             erased_any = true;
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                            redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                         }
                         continue;
                     }
@@ -609,6 +526,7 @@ fn main() {
                         continue;
                     }
                     fb.line(last.0 as i32, last.1 as i32, x as i32, y as i32, INK_W, BLACK);
+                    ink_pending.extend(ts);
                     let (x0, y0) = (last.0.min(x) as i32 - INK_W, last.1.min(y) as i32 - INK_W);
                     let (x1, y1) = (last.0.max(x) as i32 + INK_W, last.1.max(y) as i32 + INK_W);
                     dirty_rect = Some(match dirty_rect {
@@ -635,7 +553,8 @@ fn main() {
                         commit_stroke!(points);
                     } else if !points.is_empty() {
                         // Too short to keep: erase the stray ink dot.
-                        redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                        // redraw_all blanks the status strip; the result restores it, the halo and the label (same signature, no replay).
+                        repaint_and_recognize!(session.previous_ring.clone());
                     }
                 }
                 // Real finger-up (rm-appload 0.5.3 sends it per lifted point):
@@ -652,39 +571,50 @@ fn main() {
                         continue;
                     }
                     // Panel open: a tap picks a spell; anywhere else closes it.
-                    if catalogue_open && event.x >= SIDEBAR_W {
+                    if panel.open && event.x >= SIDEBAR_W {
                         if last_chrome_tap.elapsed().as_millis() < 250 {
                             continue;
                         }
                         last_chrome_tap = Instant::now();
-                        catalogue_open = false;
-                        let Some(i) = catalogue::row_at(event.x, event.y, spell_catalogue.len()) else {
-                            redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
-                            continue;
+                        let i = match panel.tap(event.x, event.y, spell_catalogue.len()) {
+                            catalogue::PanelTap::Turned => {
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, panel.page);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                                continue;
+                            }
+                            catalogue::PanelTap::Dismissed => {
+                                touch_until_lift_ignored = true;
+                                last_touch = Instant::now();
+                                // Repaint + recognize: the result brings back the status
+                                // line, halo and label the panel covered (same
+                                // signature, so no replay).
+                                repaint_and_recognize!(session.previous_ring.clone());
+                                continue;
+                            }
+                            catalogue::PanelTap::Pick(i) => i,
                         };
-                        // Replace the page (one ring per drawing; the first
-                        // commit clears redo, so the old drawing is gone, as when
-                        // drawing after X), forget the last activation so the
-                        // spell plays every time, then ink stroke by stroke
-                        // through the pen-up path.
+                        // The pick replaces the page: a drag still waiting to commit
+                        // points at a stroke that's gone.
+                        moving = None;
+                        // Replace the page (session.pick_catalogue: the old drawing is
+                        // gone, the last activation forgotten so the spell plays
+                        // every time), then ink the new strokes on screen.
                         touch_until_lift_ignored = true;
                         last_touch = Instant::now();
-                        redo.extend(strokes.drain(..));
-                        previous_ring = None;
-                        snapped_ring_ids.clear();
-                        last_activation.clear();
-                        redraw_all(&mut fb, &client, &strokes, None, erase_mode);
+                        session.pick_catalogue(spell_catalogue[i].screen_strokes());
+                        redraw_all(&mut fb, &client, &[], None, erase_mode);
                         let _ = client.request_full_refresh();
                         eprintln!("catalogue: inking {}", spell_catalogue[i].id);
-                        for points in spell_catalogue[i].screen_strokes() {
+                        for stroke in &session.strokes {
+                            let points = &stroke.points;
                             for w in points.windows(2) {
                                 fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                             }
                             let (x0, x1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
                             let (y0, y1) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
                             let _ = client.update_partial(x0 as i32 - INK_W, y0 as i32 - INK_W, (x1 - x0) as i32 + 2 * INK_W, (y1 - y0) as i32 + 2 * INK_W);
-                            commit_stroke!(points);
                         }
+                        recognizer.request(&session.strokes, None);
                         continue;
                     }
                     if touch_until_lift_ignored && event.x >= SIDEBAR_W {
@@ -695,25 +625,19 @@ fn main() {
                     if event.x >= SIDEBAR_W && event.y >= STATUS_H {
                         let (x, y) = (event.x as f64, event.y as f64);
                         last_touch = Instant::now();
-                        match moving {
-                            Some((idx, id, lx, ly)) if id == event.dev_id => {
+                        match moving.clone() {
+                            Some((sid, id, lx, ly)) if id == event.dev_id => {
                                 let (dx, dy) = (x - lx, y - ly);
-                                for p in &mut strokes[idx].points {
-                                    p.0 += dx;
-                                    p.1 += dy;
-                                }
-                                moving = Some((idx, id, x, y));
+                                session.move_stroke(&sid, dx, dy);
+                                moving = Some((sid, id, x, y));
                                 if move_redraw.elapsed().as_millis() > 150 {
                                     move_redraw = Instant::now();
-                                    redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                    redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                                 }
                             }
                             None => {
-                                let grab = strokes.iter().position(|s| {
-                                    s.points.iter().any(|p| (p.0 - x).hypot(p.1 - y) < 40.0)
-                                });
-                                if let Some(idx) = grab {
-                                    moving = Some((idx, event.dev_id, x, y));
+                                if let Some(sid) = session.grab_at(x, y) {
+                                    moving = Some((sid, event.dev_id, x, y));
                                 }
                             }
                             _ => {} // another finger - ignore
@@ -728,38 +652,37 @@ fn main() {
                         continue;
                     }
                     last_chrome_tap = Instant::now();
-                    let slot = icon_slot(event.y);
-                    eprintln!("sidebar tap y={} -> slot {:?}", event.y, slot);
+                    let slot = slot_at(event.x, event.y);
+                    eprintln!("sidebar tap {},{} -> slot {:?}", event.x, event.y, slot);
                     match slot {
                         Some(0) | Some(1) => {
                             erase_mode = slot == Some(1);
-                            draw_sidebar(&mut fb, erase_mode);
-                            let _ = client.update_partial(0, 0, SIDEBAR_W, icon_y(5) + ICON_H + 12);
+                            chrome::draw_sidebar(&mut fb, erase_mode);
+                            let _ = client.update_partial(0, 0, SIDEBAR_W, chrome::toolbar_h());
                             continue;
                         }
                         Some(2) => {
-                            catalogue_open = false;
-                            if let Some(s) = strokes.pop() {
-                                redo.push(s);
-                            }
+                            panel.close();
+                            session.undo();
                         }
                         Some(3) => {
-                            catalogue_open = false;
-                            if let Some(s) = redo.pop() {
-                                strokes.push(s);
-                            }
+                            panel.close();
+                            session.redo();
                         }
                         Some(4) => {
-                            catalogue_open = false;
-                            redo.extend(strokes.drain(..)); // CLEAR is undoable via redo taps
+                            panel.close();
+                            session.clear(); // CLEAR is undoable via redo taps
                         }
                         Some(5) => {
-                            catalogue_open = !catalogue_open;
-                            if catalogue_open {
-                                catalogue::draw_panel(&mut fb, &spell_catalogue);
-                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h(spell_catalogue.len()));
+                            if panel.toggle() {
+                                catalogue::draw_panel(&mut fb, &spell_catalogue, panel.page);
+                                let _ = client.update_partial(catalogue::PANEL_X, catalogue::PANEL_Y, catalogue::PANEL_W, catalogue::panel_h_for(spell_catalogue.len()));
+                                // Every close path repaints the whole sidebar, which resets it.
+                                let (x, y, w, h) = chrome::draw_spells_button(&mut fb, true);
+                                let _ = client.update_partial(x, y, w, h);
                             } else {
-                                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                                // As a dismiss: the result restores what the panel covered.
+                                repaint_and_recognize!(session.previous_ring.clone());
                             }
                             continue;
                         }
@@ -781,12 +704,26 @@ fn main() {
                 let _ = client.update_partial(x0.max(0), y0.max(0), x1 - x0, y1 - y0);
                 dirty_rect = None;
                 last_flush = Instant::now();
+                let sent = clock_s(libc::CLOCK_MONOTONIC);
+                if recognizer.busy.load(Ordering::Relaxed) {
+                    stroke_busy += ink_pending.len();
+                }
+                stroke_lat.extend(ink_pending.drain(..).map(|t| (sent - t) * 1000.0));
             }
+        }
+        // The stroke's last flush is done: log it.
+        if !pen_down && dirty_rect.is_none() && !stroke_lat.is_empty() {
+            lag_stroke += 1;
+            lag_log(&lag::stroke_line(lag_stroke, &mut stroke_lat, stroke_busy));
+            stroke_lat.clear();
+            stroke_busy = 0;
         }
 
         // Recognition results land between strokes, never mid-stroke (a ring
-        // snap repaints the page and would wipe live ink).
-        if !pen_down {
+        // snap repaints the page and would wipe live ink), and never under an
+        // open catalogue panel (a redraw/animation would wipe it on screen
+        // while taps still hit-test it). They wait in the channel until then.
+        if !pen_down && panel.allows_repaint() {
             if let Some(outcome) = recognizer.latest() {
                 apply_outcome!(outcome);
             }
@@ -797,11 +734,11 @@ fn main() {
         }
 
         // Finger lifted mid-drag: commit the move, re-recognize.
-        if moving.is_some() && last_touch.elapsed().as_millis() > 400 {
+        if moving.is_some() && last_touch.elapsed().as_millis() > 400 && panel.allows_repaint() {
             moving = None;
             // A dragged ring stroke makes the old snapped circle wrong: drop it
             // until the result re-snaps.
-            previous_ring = None;
+            session.previous_ring = None;
             repaint_and_recognize!(None);
         }
 
@@ -811,12 +748,14 @@ fn main() {
             hold_snapped = true;
             if let Some(snapped) = snap_stroke(&current) {
                 current = snapped;
-                redraw_all(&mut fb, &client, &strokes, previous_ring.as_ref(), erase_mode);
+                redraw_all(&mut fb, &client, &session.strokes, session.previous_ring.as_ref(), erase_mode);
                 for w in current.windows(2) {
                     fb.line(w[0].0 as i32, w[0].1 as i32, w[1].0 as i32, w[1].1 as i32, INK_W, BLACK);
                 }
                 let _ = client.update_all();
                 dirty_rect = None;
+                // The hold already passed: these samples aren't ink lag.
+                ink_pending.clear();
             }
         }
 
