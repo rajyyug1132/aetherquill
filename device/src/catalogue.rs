@@ -7,7 +7,7 @@
 use serde::Deserialize;
 
 use crate::chrome::fit;
-use crate::render::{Fb, BLACK, GRAY, WHITE};
+use crate::render::{Fb, BLACK, WHITE};
 
 /// Screen px -> web-canvas px, so the vendored CONFIG's pixel-tuned
 /// thresholds (ring.minRadius 70 etc.) hold on the 702x936 canvas.
@@ -137,11 +137,23 @@ pub fn turn(page: usize, nav: Nav, total: usize) -> usize {
 
 fn draw_nav_button(fb: &mut Fb, total: usize, nav: Nav, enabled: bool) {
     let (x, y) = (nav_x(nav), nav_y(total));
-    let c = if enabled { BLACK } else { GRAY };
-    fb.rect_outline(x, y, NAV_W, NAV_H, if enabled { 4 } else { 2 }, c);
+    // Pure black/white (e-ink dithers gray): enabled = solid 4px frame,
+    // disabled = dashed 2px frame. The label stays either way.
+    if enabled {
+        fb.rect_outline(x, y, NAV_W, NAV_H, 4, BLACK);
+    } else {
+        for d in (0..NAV_W).step_by(16) {
+            fb.fill_rect(x + d, y, 8.min(NAV_W - d), 2, BLACK);
+            fb.fill_rect(x + d, y + NAV_H - 2, 8.min(NAV_W - d), 2, BLACK);
+        }
+        for d in (0..NAV_H).step_by(16) {
+            fb.fill_rect(x, y + d, 2, 8.min(NAV_H - d), BLACK);
+            fb.fill_rect(x + NAV_W - 2, y + d, 2, 8.min(NAV_H - d), BLACK);
+        }
+    }
     let label = if nav == Nav::Prev { "< PREV" } else { "NEXT >" };
     let w = label.len() as i32 * 32;
-    fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, c);
+    fb.text(x + (NAV_W - w) / 2, y + (NAV_H - 32) / 2, label, 4, BLACK);
 }
 
 pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
@@ -155,7 +167,7 @@ pub fn draw_panel(fb: &mut Fb, spells: &[CatalogueSpell], page: usize) {
     let line_chars = ((PANEL_W - 56) / 16) as usize;
     for (i, spell) in spells[page_range(total, page)].iter().enumerate() {
         let y = row_y(i);
-        fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 2, GRAY);
+        fb.fill_rect(PANEL_X + 20, y, PANEL_W - 40, 2, BLACK);
         fb.text(PANEL_X + 28, y + 26, &fit(&spell.name, name_chars), 3, BLACK);
         // Black, not gray, for legibility of the 2px-stroke text (unverified on hardware).
         fb.text(PANEL_X + 28, y + 74, &fit(&spell.line, line_chars), 2, BLACK);

@@ -3,7 +3,7 @@
 
 use recognizer::spell_builder::SpellIr;
 
-use crate::render::{Fb, BLACK, GRAY, H, W, WHITE};
+use crate::render::{Fb, BLACK, H, W, WHITE};
 use crate::spell_view::status_lines;
 
 // Left vertical toolbar, reMarkable-style: pen, eraser, undo, redo, clear, catalogue.
@@ -82,7 +82,7 @@ fn draw_arrow_icon(fb: &mut Fb, slot: i32, flip: bool) {
 
 pub fn draw_sidebar(fb: &mut Fb, erase_mode: bool) {
     fb.fill_rect(0, 0, SIDEBAR_W, H, WHITE);
-    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, GRAY);
+    fb.fill_rect(SIDEBAR_W - 2, 0, 2, H, BLACK); // pure black: e-ink dithers gray
 
     // Slot 0: pen - nib pointing down-left.
     let fg = icon_frame(fb, 0, !erase_mode);
@@ -172,7 +172,7 @@ pub fn draw_status(fb: &mut Fb, line1: &str, line2: &str) -> (i32, i32, i32, i32
 /// Sidebar + the status strip's divider: the static chrome of a fresh page.
 pub fn draw_chrome(fb: &mut Fb, erase_mode: bool) {
     draw_sidebar(fb, erase_mode);
-    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, GRAY);
+    fb.fill_rect(SIDEBAR_W, STATUS_H - 2, W - SIDEBAR_W, 2, BLACK);
 }
 
 /// Height of the toolbar region to refresh after a tool change.
